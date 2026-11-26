@@ -23,6 +23,25 @@ content in place so its text and pictures can be edited; while grouped, the tool
 a Form's individual internal elements. It does not select arbitrary ungrouped vector paths or
 edit inline images (`BI`/`ID`/`EI`). A Form's bounding box may include whitespace.
 
+**Edit with** (right-click → Edit with) hands a raster figure to a program outside PdfCraft —
+Paint, GIMP, Photoshop, one you pick with **Other program…**, or the system's own *Open with*
+dialog — and draws the saved picture in place of the one that left. The picture is exported as a
+PNG into a private folder under the system's temporary directory, never beside the document:
+a document may sit in a folder Drive or OneDrive syncs, where a file an editor rewrites is
+uploaded, locked or restored mid-edit. **Edit at** chooses the resolution the editor is handed —
+the figure's own pixels by default, or 150, 300 or 600 dpi, which follows `/UserUnit` and a
+turned placement. The program is never waited for and never killed, because a single-instance
+editor hands the file to the copy already open and exits at once, and stays open long after the
+first save; the saved file's stamp is what is watched, and it must hold still for two polls
+before it is read, so a program writing in place is not read half-written. A save becomes one
+undoable page-image edit, and `/Intent`, `/Interpolate` and `/OC` are carried over from the
+replaced object, so a picture that belonged to a layer stays on it. The placement is found by
+its image object and its box, not by its position in the page's list, so an edit that moved the
+index meanwhile (deleting another image, arranging, ungrouping, undo) does not misplace it. A
+placement that was deleted, or one drawn twice in the same box, is not put back: the message
+says why and the file is left alone. A picture saved while its tab is in the background is
+applied when that tab comes to the front. The document on disk is untouched until you save.
+
 For automation, `page_images` lists both kinds with `kind: "image"` or `kind: "form"`.
 Forms have `pixels: [0, 0]`, since they have no single bitmap resolution. Use the returned
 number with `image_edit` (move, rotate, flip_horizontal, flip_vertical, delete).

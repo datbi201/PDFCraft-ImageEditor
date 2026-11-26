@@ -678,11 +678,44 @@ pub(crate) fn delete_picture(session: &mut PageSession, placed: &[PlacedPage], v
     Some(Edit::EditPageImage { page, index, change: pdfcraft_engine::ImageEdit::Delete })
 }
 
+/// An external image editor choice in the picture context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalEditor {
+    Paint,
+    Gimp,
+    Photoshop,
+    Other,
+    SystemOpenWith,
+}
+
+/// Resolution handed to an external image editor (**Edit at**).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditImageDpi {
+    #[default]
+    Original,
+    Dpi150,
+    Dpi300,
+    Dpi600,
+}
+
+impl EditImageDpi {
+    pub fn as_dpi(self) -> Option<f64> {
+        match self {
+            Self::Original => None,
+            Self::Dpi150 => Some(150.0),
+            Self::Dpi300 => Some(300.0),
+            Self::Dpi600 => Some(600.0),
+        }
+    }
+}
+
 /// What a right-click on a selected image asks for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageAction {
     Replace(usize, usize),
     Save(usize, usize),
+    EditWith(usize, usize, ExternalEditor),
+    SetEditDpi(EditImageDpi),
     Copy(usize, usize),
     CopyFile(usize, usize),
     /// Copy the picture, then remove it from the page.
@@ -726,12 +759,13 @@ pub(crate) struct PictureMenu<'a> {
     pub(crate) can_paste: bool,
     pub(crate) at: Option<[f64; 2]>,
     pub(crate) rotation: u16,
+    pub(crate) edit_dpi: EditImageDpi,
 }
 
 /// The right-click menu of the selected picture `menu.hit` on `menu.page`; the action it asks the
 /// caller to run, if any (edits it makes itself are queued on `session`).
 pub(crate) fn picture_menu(ui: &mut egui::Ui, session: &mut PageSession, menu: &PictureMenu<'_>) -> Option<ImageAction> {
-    let PictureMenu { images, page, hit, can_paste, at, rotation } = *menu;
+    let PictureMenu { images, page, hit, can_paste, at, rotation, edit_dpi } = *menu;
     let img = images.get(hit)?;
     use pdfcraft_engine::ImageEdit as E;
     let raster = !img.is_form;
@@ -810,6 +844,9 @@ pub(crate) fn picture_menu(ui: &mut egui::Ui, session: &mut PageSession, menu: &
     if item(ui, raster, tl!("Save Image As…")) {
         action = Some(ImageAction::Save(page, hit));
     }
+    if let Some(ext) = external_editor_menus(ui, page, hit, raster, edit_dpi) {
+        action = Some(ext);
+    }
     let _ = Divider::horizontal().show(ui);
     if item(ui, true, tl!("Draw freehand")) {
         action = Some(ImageAction::DrawFreehand);
@@ -829,6 +866,42 @@ pub(crate) fn picture_menu(ui: &mut egui::Ui, session: &mut PageSession, menu: &
         session.image_selection = None;
         session.pending_edit = edit(E::Delete);
     }
+    action
+}
+
+fn external_editor_menus(ui: &mut egui::Ui, page: usize, hit: usize, raster: bool, edit_dpi: EditImageDpi) -> Option<ImageAction> {
+    let mut action = None;
+    let _ = Menu::submenu_row_enabled(ui, tl!("Edit with"), raster, |ui, _| {
+        #[cfg(target_os = "windows")]
+        if item(ui, true, tl!("Paint")) {
+            action = Some(ImageAction::EditWith(page, hit, ExternalEditor::Paint));
+        }
+        if item(ui, true, tl!("GIMP")) {
+            action = Some(ImageAction::EditWith(page, hit, ExternalEditor::Gimp));
+        }
+        if item(ui, true, tl!("Photoshop")) {
+            action = Some(ImageAction::EditWith(page, hit, ExternalEditor::Photoshop));
+        }
+        let _ = Divider::horizontal().show(ui);
+        if item(ui, true, tl!("Other program…")) {
+            action = Some(ImageAction::EditWith(page, hit, ExternalEditor::Other));
+        }
+        if item(ui, true, tl!("Open with…")) {
+            action = Some(ImageAction::EditWith(page, hit, ExternalEditor::SystemOpenWith));
+        }
+    });
+    let _ = Menu::submenu_row_enabled(ui, tl!("Edit at"), raster, |ui, _| {
+        for (choice, label) in [
+            (EditImageDpi::Original, tl!("Original pixels")),
+            (EditImageDpi::Dpi150, tl!("150 dpi")),
+            (EditImageDpi::Dpi300, tl!("300 dpi")),
+            (EditImageDpi::Dpi600, tl!("600 dpi")),
+        ] {
+            if MenuItem::new(label.to_string()).radio_mark(edit_dpi == choice).show(ui).ran {
+                action = Some(ImageAction::SetEditDpi(choice));
+            }
+        }
+    });
     action
 }
 

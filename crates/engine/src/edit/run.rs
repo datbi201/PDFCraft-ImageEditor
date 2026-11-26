@@ -384,6 +384,22 @@ impl EditCtx {
     }
 }
 
+fn preserve_image_attrs(doc: &mut pdfcraft_cos::Document, old_ref: pdfcraft_cos::ObjRef, new_ref: pdfcraft_cos::ObjRef) {
+    let attrs: Vec<(&[u8], pdfcraft_cos::Object)> = {
+        let obj = doc.get(old_ref);
+        let pdfcraft_cos::Object::Stream(old) = &*obj else { return };
+        [b"Intent".as_slice(), b"Interpolate", b"OC"].into_iter().filter_map(|key| old.dict.get(key).cloned().map(|val| (key, val))).collect()
+    };
+    if attrs.is_empty() {
+        return;
+    }
+    let _ = doc.update_dict(new_ref, |d| {
+        for (key, val) in attrs {
+            d.set(key.to_vec(), val);
+        }
+    });
+}
+
 fn run_edit_page_image(doc: &mut pdfcraft_cos::Document, page: usize, index: usize, change: &ImageEdit) -> Result<(), EditError> {
     match change {
         ImageEdit::Move(to) if !to.iter().all(|v| v.is_finite()) => {
@@ -426,7 +442,11 @@ fn run_edit_page_image(doc: &mut pdfcraft_cos::Document, page: usize, index: usi
             if img.is_form {
                 return Err(EditError::Edit(pdfcraft_edit::EditError::Invalid("grouped Form artwork cannot be replaced with a bitmap".into())));
             }
-            pdfcraft_edit::ImageChange::Replace(embed_image(doc, name, bytes)?.0)
+            let new_ref = embed_image(doc, name, bytes)?.0;
+            if let Some(old_ref) = img.object {
+                preserve_image_attrs(doc, old_ref, new_ref);
+            }
+            pdfcraft_edit::ImageChange::Replace(new_ref)
         }
         ImageEdit::Crop(keep) => pdfcraft_edit::ImageChange::Crop(*keep),
         ImageEdit::Delete => pdfcraft_edit::ImageChange::Delete,

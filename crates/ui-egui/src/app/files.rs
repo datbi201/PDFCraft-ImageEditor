@@ -1062,6 +1062,8 @@ impl PdfCraftApp {
                 self.closed_tabs.push(path);
             }
             self.placed_signatures.remove(&id);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.external_images.close_doc(id);
             self.forget_recovery(id);
             self.session.close(id);
         }

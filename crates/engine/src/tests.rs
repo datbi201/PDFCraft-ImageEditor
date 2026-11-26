@@ -15948,3 +15948,112 @@ fn inline_conversions_refuse_office_documents_without_running_libreoffice() {
     assert_eq!(s.convert_to_pdf_inline("notes.txt", &Arc::new(b"hello".to_vec())).unwrap().0, SourceKind::Text);
     assert!(s.as_pdf_inline("scan.jpg", &Arc::new(jpeg_bytes())).unwrap().starts_with(b"%PDF-"));
 }
+
+#[test]
+fn page_image_png_follows_dpi_user_unit_and_turned_placement() {
+    let img = craft_image_codecs::Image::from_u8(10, 5, craft_image_codecs::ChannelLayout::Rgb, vec![120u8; 10 * 5 * 3]).unwrap();
+    let png = Arc::new(craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).unwrap());
+    let (mut s, id) = session_with(1);
+    // Place 72x36 user-space units on a /UserUnit 2 page (144x72 displayed points).
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([10.0, 10.0, 82.0, 46.0]), name: "p.png".into(), bytes: png }).unwrap();
+    // Rotate 90 degrees so the placement matrix swaps user-space X and Y axes.
+    s.apply(id, Edit::EditPageImage { page: 0, index: 0, change: ImageEdit::Rotate(1) }).unwrap();
+
+    // Inject /UserUnit 2 directly on the underlying page dictionary and reopen via working bytes.
+    let mut cos = s.get(id).unwrap().editor.as_ref().unwrap().cos.clone();
+    let page_obj = pdfcraft_model::pages(&cos)[0].obj;
+    cos.update_dict(page_obj, |d| d.set(b"UserUnit".to_vec(), pdfcraft_cos::Object::Int(2))).unwrap();
+    let pdf = pdfcraft_cos::write_full(&cos, &pdfcraft_cos::SaveOptions::default()).unwrap();
+    let id2 = s.open("uu.pdf", None, Arc::new(pdf), None).unwrap();
+    let doc = s.get(id2).unwrap();
+
+    // Original pixels stays 10x5.
+    let orig = doc.page_image_png(0, 0, None).unwrap();
+    assert_eq!((orig.width, orig.height), (10, 5));
+
+    // At 150 dpi with /UserUnit 2: 72 * 2 * 150 / 72 = 300 px wide, 36 * 2 * 150 / 72 = 150 px tall,
+    // preserving local XObject axes rather than swapped AABB dimensions.
+    let at_150 = doc.page_image_png(0, 0, Some(150.0)).unwrap();
+    assert_eq!((at_150.width, at_150.height), (300, 150));
+}
+
+#[test]
+fn image_replace_preserves_intent_interpolate_and_oc() {
+    let img1 = craft_image_codecs::Image::from_u8(2, 2, craft_image_codecs::ChannelLayout::Rgb, vec![200u8; 12]).unwrap();
+    let png1 = Arc::new(craft_image_codecs::encode(&img1, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).unwrap());
+    let img2 = craft_image_codecs::Image::from_u8(3, 3, craft_image_codecs::ChannelLayout::Rgb, vec![40u8; 27]).unwrap();
+    let png2 = Arc::new(craft_image_codecs::encode(&img2, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).unwrap());
+
+    let (mut s, id) = session_with(1);
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([10.0, 10.0, 50.0, 50.0]), name: "a.png".into(), bytes: png1 }).unwrap();
+
+    // Attach /Intent, /Interpolate, and an /OC layer ref to the initial XObject.
+    let mut cos = s.get(id).unwrap().editor.as_ref().unwrap().cos.clone();
+    let old_obj = s.get(id).unwrap().page_images(0)[0].object.unwrap();
+    let mut ocg = pdfcraft_cos::Dict::new();
+    ocg.set(b"Type".to_vec(), pdfcraft_cos::Object::name("OCG"));
+    ocg.set(b"Name".to_vec(), pdfcraft_cos::Object::String(pdfcraft_cos::PdfString::literal(b"Photos".to_vec())));
+    let ocg_ref = cos.add(pdfcraft_cos::Object::Dict(ocg));
+    cos.update_dict(old_obj, |d| {
+        d.set(b"Intent".to_vec(), pdfcraft_cos::Object::name("RelativeColorimetric"));
+        d.set(b"Interpolate".to_vec(), pdfcraft_cos::Object::Bool(true));
+        d.set(b"OC".to_vec(), pdfcraft_cos::Object::Ref(ocg_ref));
+    })
+    .unwrap();
+    let pdf = pdfcraft_cos::write_full(&cos, &pdfcraft_cos::SaveOptions::default()).unwrap();
+    let id2 = s.open("oc.pdf", None, Arc::new(pdf), None).unwrap();
+    let old_obj = s.get(id2).unwrap().page_images(0)[0].object.unwrap();
+
+    s.apply(id2, Edit::EditPageImage { page: 0, index: 0, change: ImageEdit::Replace { name: "b.png".into(), bytes: png2 } }).unwrap();
+    let doc = s.get(id2).unwrap();
+    let new_obj = doc.page_images(0)[0].object.unwrap();
+    assert_ne!(new_obj, old_obj);
+    let new_stream = doc.editor.as_ref().unwrap().cos.get(new_obj);
+    let pdfcraft_cos::Object::Stream(stream) = &*new_stream else { panic!("expected image stream") };
+    assert_eq!(stream.dict.name(b"Intent"), Some(b"RelativeColorimetric".as_slice()));
+    assert!(matches!(stream.dict.get(b"Interpolate"), Some(pdfcraft_cos::Object::Bool(true))));
+    assert_eq!(stream.dict.get(b"OC").and_then(|o| o.as_ref()), Some(ocg_ref));
+
+    // Undo restores the original XObject.
+    s.undo(id2).unwrap();
+    assert_eq!(s.get(id2).unwrap().page_images(0)[0].object, Some(old_obj));
+}
+
+#[test]
+fn resolve_page_image_tracks_object_and_rect_across_reindexing_and_refuses_missing_or_duplicate() {
+    let img = craft_image_codecs::Image::from_u8(2, 2, craft_image_codecs::ChannelLayout::Rgb, vec![200u8; 12]).unwrap();
+    let png = Arc::new(craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).unwrap());
+    let (mut s, id) = session_with(1);
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([10.0, 10.0, 30.0, 30.0]), name: "first.png".into(), bytes: Arc::clone(&png) }).unwrap();
+    s.apply(id, Edit::AddImage { page: 0, rect: Some([40.0, 10.0, 60.0, 30.0]), name: "second.png".into(), bytes: Arc::clone(&png) }).unwrap();
+
+    let second = s.get(id).unwrap().page_images(0)[1].clone();
+    let target_obj = second.object.unwrap();
+    let target_rect = second.rect;
+
+    // Deleting image 0 shifts image 1 down to index 0; resolve_page_image finds index 0.
+    s.apply(id, Edit::EditPageImage { page: 0, index: 0, change: ImageEdit::Delete }).unwrap();
+    assert_eq!(s.get(id).unwrap().resolve_page_image(0, target_obj, target_rect).unwrap(), 0);
+
+    // Deleting the target itself causes resolve_page_image to refuse clearly.
+    s.apply(id, Edit::EditPageImage { page: 0, index: 0, change: ImageEdit::Delete }).unwrap();
+    assert!(s.get(id).unwrap().resolve_page_image(0, target_obj, target_rect).is_err());
+
+    // Two placements of the same image in the same box are refused as ambiguous.
+    let dup_pdf = Arc::new(
+        b"%PDF-1.4\n\
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >> endobj\n\
+4 0 obj << /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\xff\nendstream\nendobj\n\
+5 0 obj << /Length 55 >>\nstream\nq 20 0 0 20 10 10 cm /Im1 Do Q\nq 20 0 0 20 10 10 cm /Im1 Do Q\nendstream\nendobj\n\
+xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000241 00000 n \n0000000368 00000 n \n\
+trailer << /Size 6 /Root 1 0 R >>\nstartxref\n472\n%%EOF\n"
+            .to_vec(),
+    );
+    let dup_id = s.open("dup.pdf", None, dup_pdf, None).unwrap();
+    let imgs = s.get(dup_id).unwrap().page_images(0);
+    assert_eq!(imgs.len(), 2);
+    let err = s.get(dup_id).unwrap().resolve_page_image(0, imgs[0].object.unwrap(), imgs[0].rect).unwrap_err();
+    assert!(err.contains("more than once"), "{err}");
+}

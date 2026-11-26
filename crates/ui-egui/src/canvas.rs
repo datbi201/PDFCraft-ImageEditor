@@ -1984,6 +1984,7 @@ pub fn document_area_at(app: &mut PdfCraftApp, index: usize, rect: Rect, ui: &mu
                 can_paste_comments: app.comment_clipboard.is_some(),
                 jobs: app.host.jobs_shared(),
                 wake: &app.wake,
+                edit_dpi: app.edit_image_dpi,
             },
         )
     };
@@ -2145,6 +2146,8 @@ fn apply_frame_requests(app: &mut PdfCraftApp, ctx: &egui::Context, index: usize
     match image_action {
         Some(crate::edit_text_ui::ImageAction::Replace(page, index)) => app.replace_page_image_dialog(page, index),
         Some(crate::edit_text_ui::ImageAction::Save(page, index)) => app.save_page_image(page, index),
+        Some(crate::edit_text_ui::ImageAction::EditWith(page, index, editor)) => app.edit_page_image_with(page, index, editor),
+        Some(crate::edit_text_ui::ImageAction::SetEditDpi(dpi)) => app.edit_image_dpi = dpi,
         Some(crate::edit_text_ui::ImageAction::Copy(page, index)) => {
             app.copy_page_image(page, index);
         }

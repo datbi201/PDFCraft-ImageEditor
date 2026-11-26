@@ -107,6 +107,7 @@ pub(crate) struct PageMenuCx<'a> {
     /// The jobs and wake the picture search runs on.
     pub jobs: &'a std::sync::Arc<dyn craft::host::Jobs>,
     pub wake: &'a craft::host::Wake,
+    pub edit_dpi: crate::edit_text_ui::EditImageDpi,
 }
 
 /// The default rows, in order, for a press at `at` on `page`; `picture_under` is the picture index there.
@@ -323,7 +324,15 @@ fn rows(ui: &mut egui::Ui, view: &mut DocView, cx: &PageMenuCx<'_>, menu_for: Op
         // Paste lands where the menu opened, on the picture's page: another page's point means nothing there.
         let at = view.session.comments.context_at.filter(|(page, _)| *page == sel.page).map(|(_, at)| at);
         let rotation = (view.view.rotation % 360 + cx.info.pages.get(sel.page).map_or(0, |p| p.rotation % 360)) % 360;
-        let menu = crate::edit_text_ui::PictureMenu { images: &images, page: sel.page, hit: sel.index, can_paste: cx.can_paste_image, at, rotation };
+        let menu = crate::edit_text_ui::PictureMenu {
+            images: &images,
+            page: sel.page,
+            hit: sel.index,
+            can_paste: cx.can_paste_image,
+            at,
+            rotation,
+            edit_dpi: cx.edit_dpi,
+        };
         pick.image = crate::edit_text_ui::picture_menu(ui, &mut view.session, &menu);
         return;
     }

@@ -11,7 +11,7 @@ mod upright_image;
 use craft_image_codecs::jp2_probe::JP2_SIGNATURE;
 use craft_image_codecs::jp2_probe::{is_jpx, probe_jpx};
 use craft_image_codecs::jpeg_probe::probe_jpeg;
-pub use extract::{ExtractedImage, ImageExport, extract_images, image_file, image_file_within};
+pub use extract::{ExtractedImage, ImageExport, extract_images, image_file, image_file_within, image_png};
 pub use upright_image::jpeg_exif_orientation;
 mod office;
 #[cfg(not(target_arch = "wasm32"))]

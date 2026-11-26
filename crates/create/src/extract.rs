@@ -100,6 +100,25 @@ pub fn image_file_within(doc: &Document, image: ObjRef, budget: &mut ImageBudget
     }
 }
 
+/// Export one image XObject as a PNG, optionally resampled to `target_size` `(width, height)`.
+/// Always writes PNG (decoding JPEGs when needed) and retains soft/stencil/colour-key alpha.
+pub fn image_png(doc: &Document, image: ObjRef, target_size: Option<(u32, u32)>) -> Result<(Vec<u8>, u32, u32), String> {
+    let mut budget = ImageBudget::new(doc);
+    let (w, h, rgb, alpha) = match &*doc.get(image) {
+        Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image") => match decode_image(doc, s, &mut budget, false)? {
+            DecodedOutput::RawJpeg(_) => return Err("the JPEG image couldn't be decoded to PNG".into()),
+            DecodedOutput::Pixels { w, h, rgb, alpha } => (w, h, rgb, alpha),
+        },
+        _ => return Err("not an image".into()),
+    };
+    let pixels = match target_size {
+        Some((tw, th)) if (tw, th) != (w, h) => resize_pixels(w, h, rgb, alpha, tw, th)?,
+        _ => RawPixels { w, h, rgb, alpha },
+    };
+    let bytes = png(pixels.w, pixels.h, &pixels.rgb, pixels.alpha.as_deref())?;
+    Ok((bytes, pixels.w, pixels.h))
+}
+
 /// The image XObjects reachable from `res`, through form XObjects, in resource order.
 fn collect(doc: &Document, res: &Dict, depth: usize, forms: &mut HashSet<ObjRef>, out: &mut Vec<ObjRef>) {
     if depth > 12 {
@@ -140,10 +159,22 @@ fn decoded(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<Vec<u
     budget.decode(doc, s, MAX_DECODED).map_err(|e| e.to_string())
 }
 
+enum DecodedOutput {
+    RawJpeg(Vec<u8>),
+    Pixels { w: u32, h: u32, rgb: Vec<u8>, alpha: Option<Vec<u8>> },
+}
+
 /// The file for one image: its JPEG data as is, or a PNG. An image with transparency (a soft
 /// mask, a stencil `/Mask` or a colour-key `/Mask`) is always a PNG with that transparency as
 /// alpha, JPEG images included, so cut-out images keep their transparent background.
 fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'static str, Vec<u8>), String> {
+    match decode_image(doc, s, budget, true)? {
+        DecodedOutput::RawJpeg(bytes) => Ok(("jpg", bytes)),
+        DecodedOutput::Pixels { w, h, rgb, alpha } => png(w, h, &rgb, alpha.as_deref()).map(|p| ("png", p)),
+    }
+}
+
+fn decode_image(doc: &Document, s: &Stream, budget: &mut ImageBudget, allow_raw_jpeg: bool) -> Result<DecodedOutput, String> {
     let f = filters(s);
     let jpeg = matches!(f.last().map(Vec::as_slice), Some(b"DCTDecode" | b"DCT"));
     if matches!(f.last().map(Vec::as_slice), Some(b"JPXDecode")) {
@@ -161,11 +192,11 @@ fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'stat
     } else {
         std::borrow::Cow::Borrowed(s.raw.as_ref())
     };
-    let as_is = || Ok(("jpg", jpeg_data.to_vec()));
+    let as_is = || Ok(DecodedOutput::RawJpeg(jpeg_data.to_vec()));
     let (w, h) = (s.dict.int(b"Width").unwrap_or(0), s.dict.int(b"Height").unwrap_or(0));
     let Some((w, h)) = size(w, h) else {
         return match () {
-            _ if jpeg => as_is(),
+            _ if jpeg && allow_raw_jpeg => as_is(),
             _ if w <= 0 || h <= 0 => Err("the image has no size".into()),
             _ => Err(format!("{w} × {h} is too large to export")),
         };
@@ -196,7 +227,7 @@ fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'stat
     // a negative. The space is read once: an indexed one's lookup table is paid for each time.
     let read = (jpeg && !inverted).then(|| space(doc, s.dict.get(b"ColorSpace"), budget));
     let as_is_negative = matches!(read, Some(Ok(Space::Cmyk)));
-    if jpeg && alpha.is_none() && key.is_none() && !as_is_negative {
+    if allow_raw_jpeg && jpeg && alpha.is_none() && key.is_none() && !as_is_negative {
         return as_is();
     }
     let mut space = match read {
@@ -209,8 +240,10 @@ fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'stat
             return Err(FilterError::Spent.to_string());
         }
         // Grey, RGB or CMYK samples (YCCK is converted); a JPEG that doesn't decode, or an
-        // indexed one (not valid), is written as is, without its transparency.
-        let Some((samples, decoded)) = jpeg_samples(&jpeg_data, &space, w, h) else { return as_is() };
+        // indexed one (not valid), is written as is when allowed, without its transparency.
+        let Some((samples, decoded)) = jpeg_samples(&jpeg_data, &space, w, h) else {
+            return if allow_raw_jpeg { as_is() } else { Err("the JPEG image couldn't be decoded to PNG".into()) };
+        };
         space = decoded;
         (samples, 8)
     } else {
@@ -231,7 +264,7 @@ fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'stat
     if alpha.is_none() {
         alpha = key.and_then(|k| keyed_alpha(&samples, n, bpc, &k));
     }
-    if jpeg && alpha.is_none() && !as_is_negative {
+    if allow_raw_jpeg && jpeg && alpha.is_none() && !as_is_negative {
         return as_is();
     }
     let invert = inverted ^ mask; // a stencil mask paints its 0 samples
@@ -277,7 +310,7 @@ fn image(doc: &Document, s: &Stream, budget: &mut ImageBudget) -> Result<(&'stat
     if let (Some(a), Some(matte)) = (alpha.as_deref(), matte(doc, s, &space)) {
         unpremultiply(&mut rgb, a, matte);
     }
-    png(w as u32, h as u32, &rgb, alpha.as_deref()).map(|p| ("png", p))
+    Ok(DecodedOutput::Pixels { w: w as u32, h: h as u32, rgb, alpha })
 }
 
 /// The explicit Decode intervals for a lossless colour image (8.9.5.2, Table 90).
@@ -707,6 +740,50 @@ pub(crate) fn scaled(img: &image::GrayImage, w: u32, h: u32) -> image::GrayImage
         resize(&resize(img, w, img.height(), FilterType::Triangle), w, h, FilterType::Triangle)
     } else {
         resize(img, w, h, FilterType::Triangle)
+    }
+}
+
+struct RawPixels {
+    w: u32,
+    h: u32,
+    rgb: Vec<u8>,
+    alpha: Option<Vec<u8>>,
+}
+
+fn resize_pixels(w: u32, h: u32, rgb: Vec<u8>, alpha: Option<Vec<u8>>, tw: u32, th: u32) -> Result<RawPixels, String> {
+    use image::imageops::{FilterType, resize};
+    if tw == 0 || th == 0 || u64::from(tw).saturating_mul(u64::from(th)) > MAX_PIXELS {
+        return Err(format!("{tw} × {th} is too large to export"));
+    }
+    let largest = (u64::from(w) * u64::from(h)).max(u64::from(tw) * u64::from(th));
+    let two_step = (u64::from(w) * u64::from(th)).saturating_mul(4) > largest.saturating_mul(5);
+    match alpha {
+        Some(a) => {
+            let rgba: Vec<u8> = rgb.as_chunks::<3>().0.iter().zip(&a).flat_map(|(c, &alpha)| [c[0], c[1], c[2], alpha]).collect();
+            let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| "the image buffer didn't match its dimensions".to_string())?;
+            let resized = if two_step {
+                resize(&resize(&img, tw, h, FilterType::Lanczos3), tw, th, FilterType::Lanczos3)
+            } else {
+                resize(&img, tw, th, FilterType::Lanczos3)
+            };
+            let raw = resized.into_raw();
+            let mut out_rgb = Vec::with_capacity((tw as usize) * (th as usize) * 3);
+            let mut out_alpha = Vec::with_capacity((tw as usize) * (th as usize));
+            for px in raw.as_chunks::<4>().0 {
+                out_rgb.extend_from_slice(&[px[0], px[1], px[2]]);
+                out_alpha.push(px[3]);
+            }
+            Ok(RawPixels { w: tw, h: th, rgb: out_rgb, alpha: Some(out_alpha) })
+        }
+        None => {
+            let img = image::RgbImage::from_raw(w, h, rgb).ok_or_else(|| "the image buffer didn't match its dimensions".to_string())?;
+            let resized = if two_step {
+                resize(&resize(&img, tw, h, FilterType::Lanczos3), tw, th, FilterType::Lanczos3)
+            } else {
+                resize(&img, tw, th, FilterType::Lanczos3)
+            };
+            Ok(RawPixels { w: tw, h: th, rgb: resized.into_raw(), alpha: None })
+        }
     }
 }
 

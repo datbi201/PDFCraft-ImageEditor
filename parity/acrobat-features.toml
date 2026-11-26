@@ -2205,11 +2205,18 @@ title = "Edit an image in an external application"
 area = "C"
 tier = "P2"
 milestone = "M7"
-status = "planned"
+status = "shipped"
 commands = []
 tools = []
-evidence = []
-notes = ""
+evidence = [
+  "crates/create/src/tests.rs::image_png_exports_jpeg_and_alpha_and_resizes",
+  "crates/engine/src/tests.rs::page_image_png_follows_dpi_user_unit_and_turned_placement",
+  "crates/engine/src/tests.rs::image_replace_preserves_intent_interpolate_and_oc",
+  "crates/engine/src/tests.rs::resolve_page_image_tracks_object_and_rect_across_reindexing_and_refuses_missing_or_duplicate",
+  "crates/ui-egui/src/app/external_image.rs::two_poll_stability_and_transient_missing_recovery",
+  "crates/ui-egui/src/app/external_image.rs::background_tab_coalesces_saves_and_waits_for_foreground",
+]
+notes = "Edit text & images context menu: Edit with (Paint, GIMP, Photoshop, Other program…, Open with…) and Edit at (Original pixels, 150/300/600 dpi following /UserUnit and turned placements). Exports PNG to a private temp folder, launches detached without waiting/killing, watches composite stamp over two stable polls, preserves /Intent, /Interpolate and /OC, matches placements by (ObjRef, rect), and defers background-tab saves until foreground."
 
 [[feature]]
 id = "edit.arrange-objects"

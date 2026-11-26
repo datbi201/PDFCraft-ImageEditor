@@ -3157,3 +3157,34 @@ fn shared_pcx_keeps_version_four_rgb_and_palette_pixels() {
     assert_eq!(super::pcx("windows.pcx", &palette).unwrap().data, [4, 5, 6]);
     assert!(from_images(&[("windows.pcx".into(), rgb)]).is_ok());
 }
+
+#[test]
+fn image_png_exports_jpeg_and_alpha_and_resizes() {
+    let real_jpeg = {
+        let src = craft_image_codecs::Image::from_u8(4, 3, craft_image_codecs::ChannelLayout::Rgb, vec![120u8; 4 * 3 * 3]).unwrap();
+        craft_image_codecs::encode(&src, craft_image_codecs::Format::Jpeg, &craft_image_codecs::EncodeOptions::default()).unwrap()
+    };
+    let doc = reopen(&from_images(&[("photo.png".into(), png_bytes(true)), ("scan.jpg".into(), real_jpeg)]).unwrap());
+    let pages = pdfcraft_model::pages(&doc);
+    let image_ref = |page_idx: usize| {
+        let res = doc.resolve(pages[page_idx].dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+        let xo = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+        xo.iter().next().and_then(|(_, v)| v.as_ref()).unwrap()
+    };
+
+    // Soft-masked PNG retains RGBA at original pixels.
+    let (alpha_png, aw, ah) = image_png(&doc, image_ref(0), None).unwrap();
+    assert_eq!((aw, ah), (4, 2));
+    assert!(alpha_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let decoded_alpha =
+        craft_image_codecs::decode_as_with(craft_image_codecs::Format::Png, &alpha_png, &craft_image_codecs::DecodeOptions::default()).unwrap();
+    assert_eq!(decoded_alpha.layout(), craft_image_codecs::ChannelLayout::Rgba);
+
+    // JPEG is always decoded to PNG and resizes cleanly when target_size is provided.
+    let (jpg_png, jw, jh) = image_png(&doc, image_ref(1), Some((12, 8))).unwrap();
+    assert_eq!((jw, jh), (12, 8));
+    assert!(jpg_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    let decoded_jpg =
+        craft_image_codecs::decode_as_with(craft_image_codecs::Format::Png, &jpg_png, &craft_image_codecs::DecodeOptions::default()).unwrap();
+    assert_eq!((decoded_jpg.width(), decoded_jpg.height()), (12, 8));
+}

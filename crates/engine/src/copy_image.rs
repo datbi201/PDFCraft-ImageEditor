@@ -13,6 +13,20 @@ const MAX_COPY_PIXELS: u64 = 64_000_000;
 /// How deep Form artwork is searched for its picture.
 const MAX_FORM_DEPTH: usize = 12;
 
+/// A raster page image exported as PNG for editing in an external program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalPageImage {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub object: ObjRef,
+    pub rect: [f64; 4],
+}
+
+fn image_rect_matches(a: [f64; 4], b: [f64; 4]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-3)
+}
+
 /// A picture on a page, with its index in [`Document::page_images`].
 pub type PagePicture = (usize, pdfcraft_edit::PageImage);
 
@@ -104,6 +118,58 @@ impl Document {
             return Err(format!("item {} on page {} is not an added image", index + 1, page + 1));
         };
         picture_file(&editor.cos, img.image)
+    }
+
+    /// Export raster image `index` on `page` as PNG for editing in an external program.
+    /// `dpi: None` preserves the image's own pixels; `Some(dpi)` scales to the placement's size
+    /// on the page at `dpi` (following `/UserUnit` and any placement transform/rotation).
+    pub fn page_image_png(&self, page: usize, index: usize, dpi: Option<f64>) -> Result<ExternalPageImage, String> {
+        self.check_copying().map_err(|e| e.to_string())?;
+        if !self.allows_modification() {
+            return Err("the document's security settings don't allow this change".into());
+        }
+        let editor = self.editor.as_ref().ok_or("the document can't be read")?;
+        let img = self.page_images(page).into_iter().nth(index).ok_or_else(|| format!("page {} has no image {}", page + 1, index + 1))?;
+        if img.is_form {
+            return Err("grouped Form artwork cannot be edited in an external image editor".into());
+        }
+        let object = img.object.ok_or("the image has no object")?;
+        let target_size = match dpi {
+            Some(dpi) => {
+                if !dpi.is_finite() || dpi <= 0.0 {
+                    return Err("the resolution must be positive and finite".into());
+                }
+                let user_unit = self.page_user_unit(page);
+                let [a, b, c, d, _, _] = img.matrix;
+                let tw = (a.hypot(b) * user_unit * dpi / 72.0).round();
+                let th = (c.hypot(d) * user_unit * dpi / 72.0).round();
+                if !tw.is_finite() || !th.is_finite() || tw < 1.0 || th < 1.0 || tw > f64::from(u32::MAX) || th > f64::from(u32::MAX) {
+                    return Err("the requested resolution produces an invalid image size".into());
+                }
+                Some((tw as u32, th as u32))
+            }
+            None => None,
+        };
+        let (png, width, height) = pdfcraft_create::image_png(&editor.cos, object, target_size)?;
+        Ok(ExternalPageImage { png, width, height, object, rect: img.rect })
+    }
+
+    /// Find the current index of a placement on `page` by its XObject and placement box.
+    /// Refuses when it was deleted/changed (0 matches) or drawn twice in the same box (> 1).
+    pub fn resolve_page_image(&self, page: usize, object: ObjRef, rect: [f64; 4]) -> Result<usize, String> {
+        let mut matches = self
+            .page_images(page)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, im)| !im.is_form && im.object == Some(object) && image_rect_matches(im.rect, rect))
+            .map(|(i, _)| i);
+        let Some(first) = matches.next() else {
+            return Err(format!("Couldn't apply the edited image: the placement on page {} was moved, changed, or deleted.", page + 1));
+        };
+        if matches.next().is_some() {
+            return Err(format!("Couldn't apply the edited image: the image appears more than once in the same box on page {}.", page + 1));
+        }
+        Ok(first)
     }
 }
 

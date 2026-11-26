@@ -27,6 +27,8 @@ use craft::ui::shell::embed;
 mod clipboard;
 mod commands;
 mod control;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod external_image;
 mod files;
 mod frame;
 mod input;
@@ -370,6 +372,9 @@ impl PdfCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             watch,
             #[cfg(not(target_arch = "wasm32"))]
+            external_images: external_image::ExternalImageTracker::default(),
+            edit_image_dpi: edit_text_ui::EditImageDpi::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             reload_request: None,
             #[cfg(not(target_arch = "wasm32"))]
             pending_opens: Vec::new(),
@@ -701,10 +706,18 @@ impl eframe::App for PdfCraftApp {
         self.save_settings();
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn edit_page_image_with(&mut self, _page: usize, _index: usize, _editor: edit_text_ui::ExternalEditor) {
+        self.notify_tr("Editing images in an external program requires the desktop app");
+    }
+
     /// Starts an update that waits for the exit. On macOS the process ends before the app is dropped.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         #[cfg(not(target_arch = "wasm32"))]
-        self.updater.start_pending_update();
+        {
+            self.external_images.cleanup_all();
+            self.updater.start_pending_update();
+        }
     }
 
     /// Each frame's work before drawing: the update check, opens, control-channel requests, the
@@ -779,7 +792,10 @@ impl PdfCraftApp {
         self.autosave_tick(ctx, web_time::Instant::now());
         // Reload documents whose files a build rewrote (#431).
         #[cfg(not(target_arch = "wasm32"))]
-        self.watch_files(ctx);
+        {
+            self.watch_files(ctx);
+            self.poll_external_images(ctx);
+        }
         if self.host_dirty.is_some() {
             // An OCR review not yet accepted or rejected is work the page would lose, too.
             let dirty = self.work_at_risk();

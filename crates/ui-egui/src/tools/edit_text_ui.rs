@@ -38,7 +38,7 @@ mod layout;
 
 pub(crate) use background::TextBackground;
 use draft::{ParagraphCover, ParagraphText};
-pub use image::{CropMode, ImageAction, ImageSelection};
+pub use image::{CropMode, EditImageDpi, ExternalEditor, ImageAction, ImageSelection};
 pub(crate) use image::{PictureMenu, delete_picture, picture_context, picture_controls, picture_menu, picture_parts, picture_press, user_to_screen};
 pub(crate) use layout::editor_font;
 #[cfg(test)]

@@ -440,6 +440,11 @@ pub struct PdfCraftApp {
     /// Open documents' files, watched for changes on disk.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) watch: craft::platform::watch::FileWatch<DocId>,
+    /// Exported temp PNGs being watched for saves from an external image editor.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) external_images: app::external_image::ExternalImageTracker,
+    /// Target resolution handed to external image editors (**Edit at**).
+    pub edit_image_dpi: edit_text_ui::EditImageDpi,
     // PLAN: assumed Option<DocId>, the document whose changed file waits to be reloaded (pdf-shell-w14).
     /// A document whose changed file waits to be reloaded.
     #[cfg(not(target_arch = "wasm32"))]

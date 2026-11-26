@@ -534,6 +534,11 @@ impl PdfCraftApp {
                     v.view.go_to(v.current());
                 }
             }
+            "view.layout.columns" => {
+                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
+                    v.enter_page_grid();
+                }
+            }
             // The Continuous scrolling checkbox (an independent toggle over the base layout).
             "view.continuous" => {
                 if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {

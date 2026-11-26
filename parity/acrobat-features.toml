@@ -917,6 +917,18 @@ evidence = ["crates/ui-egui/tests/it/viewer.rs::layouts_fit_height_labels_and_sy
 notes = "the two-page view scrolls continuously"
 
 [[feature]]
+id = "view.layout-columns"
+title = "Page grid view"
+area = "B"
+tier = "P2"
+milestone = "M3"
+status = "shipped"
+commands = ["view.layout.columns"]
+tools = []
+evidence = ["crates/ui-egui/tests/it/view.rs::page_display_commands_switch_layouts"]
+notes = "Multipage responsive grid (PageDisplay::Columns) that dynamically arranges pages into columns and rows based on zoom level and viewport width; accessible from View > Page display, the navigation rail display menu, Preferences, and the command palette."
+
+[[feature]]
 id = "view.cover-page"
 title = "Show cover page in two-page view"
 area = "B"

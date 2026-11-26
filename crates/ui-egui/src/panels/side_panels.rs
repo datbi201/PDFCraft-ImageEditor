@@ -680,12 +680,23 @@ fn show_panel(app: &mut PdfCraftApp, panel: PanelId, visible: bool) -> Result<()
 /// expands the column with it in front, hiding it collapses the column to its icons. One closed from its tab comes
 /// back to its recorded place first.
 fn set_shown(workspace: &mut Workspace<PanelId>, panel: PanelId, visible: bool) -> Result<(), DockError> {
-    let fallback = (panel != PanelId::Toolbar && workspace.layout().contains(&PanelId::Toolbar)).then_some(PanelId::Toolbar);
     if panel.side().is_none() {
-        return workspace.set_visible(panel, visible, fallback, false, permissions);
+        return workspace.set_visible(panel, visible, None, false, permissions);
     }
     if visible {
-        workspace.set_visible(panel, true, fallback, false, permissions)?;
+        if !workspace.layout().contains(&panel) && panel == PanelId::Tools {
+            // Try restoring from hidden history first; fall back to opening on the Start edge rather than
+            // anchoring on `PanelId::Toolbar` (which floats and forbids sharing a column).
+            if workspace.set_visible(panel, true, None, false, permissions).is_err() {
+                let action = match edge_target(workspace, DockEdge::Start) {
+                    Target::At { anchor, placement, .. } => Action::open_at(panel, anchor, placement),
+                    _ => Action::open_at(panel, PanelId::Document, DockPlacement::Edge(DockSide::Start)),
+                };
+                workspace.apply(action, false, permissions)?;
+            }
+        } else {
+            workspace.set_visible(panel, true, None, false, permissions)?;
+        }
         return workspace.apply(Action::set_iconic(panel, false), false, permissions).map(drop);
     }
     if workspace.layout().panel_state(&panel) != PanelState::Front {
@@ -1231,5 +1242,22 @@ mod tests {
         let snapshot = moved.state().settings_snapshot();
         let restored = harness(move |app| app.apply_settings(&snapshot));
         assert!(tools_x(&restored) > 700.0);
+    }
+
+    #[test]
+    fn all_tools_opens_cleanly_even_when_toolbar_floats_and_tools_is_absent() {
+        let mut workspace = default_workspace(DockSide::End);
+        workspace.set_visible(PanelId::Tools, false, None, false, permissions).unwrap();
+        assert!(!workspace.layout().contains(&PanelId::Tools));
+        // Simulates reopening via fallback when Toolbar is floating (shares_column=false).
+        set_shown(&mut workspace, PanelId::Tools, true).unwrap();
+        assert!(workspace.layout().contains(&PanelId::Tools));
+        assert_eq!(edge_of(&workspace, PanelId::Tools), Some(DockEdge::Start));
+
+        // Even when the workspace drops hidden history (or a layout lacks Tools while Toolbar floats), opening never refuses.
+        let mut stripped = Workspace::new(workspace.layout().clone());
+        set_shown(&mut stripped, PanelId::Tools, true).unwrap();
+        assert!(stripped.layout().contains(&PanelId::Tools));
+        assert_eq!(edge_of(&stripped, PanelId::Tools), Some(DockEdge::Start));
     }
 }

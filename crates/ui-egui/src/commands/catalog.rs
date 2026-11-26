@@ -49,7 +49,7 @@ static CATALOG_MAC: OnceLock<Option<AppCatalog>> = OnceLock::new();
 /// What a command is to the keymap: a toggle or a radio choice for the ones that carry a checked state.
 fn kind_of(id: &str) -> CommandKind {
     match id {
-        "view.layout.single" | "view.layout.two_up" => CommandKind::Radio { group: Some("layout".into()) },
+        "view.layout.single" | "view.layout.two_up" | "view.layout.columns" => CommandKind::Radio { group: Some("layout".into()) },
         "view.theme.system" | "view.theme.light" | "view.theme.dark" => CommandKind::Radio { group: Some("theme".into()) },
         PANEL => CommandKind::Radio { group: Some("panel".into()) },
         "view.continuous" | "view.page_gaps" | "view.layout.cover" | "view.full_screen" | "view.read_mode" | "view.side_panel"
@@ -227,11 +227,12 @@ fn enabled(app: &PdfCraftApp, ctx: &egui::Context, command: &CommandRef) -> bool
 }
 
 /// The checked or selected state of a toggle or radio command; `None` for any other.
-fn checked(app: &PdfCraftApp, command: &CommandRef) -> Option<bool> {
+pub(crate) fn checked(app: &PdfCraftApp, command: &CommandRef) -> Option<bool> {
     let view = app.active.and_then(|i| app.views.get(i)).map(|v| &v.view);
     Some(match command.id.as_str() {
         "view.layout.single" => view.is_some_and(|v| v.display == PageDisplay::Single),
         "view.layout.two_up" => view.is_some_and(|v| v.display == PageDisplay::TwoUp),
+        "view.layout.columns" => view.is_some_and(|v| v.display == PageDisplay::Columns),
         "view.continuous" => view.is_some_and(|v| v.continuous),
         "view.page_gaps" => view.is_some_and(|v| v.page_gaps),
         "view.layout.cover" => view.is_some_and(|v| v.cover),

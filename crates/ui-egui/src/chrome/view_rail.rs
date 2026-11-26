@@ -85,12 +85,17 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
     IconButton::command(IconId::new("rotate_cw"), "view.rotate.cw").show(ui);
 
     // The rows' marks come from the commands' checked state (the catalog), not from here.
-    let display_icon = if view.view.display == PageDisplay::Single { "file-text" } else { "columns-2" };
+    let display_icon = match view.view.display {
+        PageDisplay::Single => "file-text",
+        PageDisplay::TwoUp => "columns-2",
+        PageDisplay::Columns => "layout-grid",
+    };
     let display = IconButton::new(IconId::new(display_icon)).label("Page display").popup(PopupKind::Menu).show(ui);
     Menu::new("Page display").opened_by(&display.response, Trigger::Press).show(ui, |ui, _| {
         for command in [
             "view.layout.single",
             "view.layout.two_up",
+            "view.layout.columns",
             "view.continuous",
             "view.page_gaps",
             "view.layout.cover",

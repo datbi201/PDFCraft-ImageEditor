@@ -219,6 +219,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // The palette still runs them.
     c("view.layout.single", "Single page", None, None, Document, "file-text"),
     c("view.layout.two_up", "Two-page view", None, None, Document, "columns-2"),
+    c("view.layout.columns", "Page grid", None, None, Document, "layout-grid"),
     c("view.continuous", "Continuous scrolling", None, None, Document, "swap_vertical"),
     c("view.page_gaps", "Show gaps between pages", None, None, Document, "swap_vertical"),
     c("view.layout.cover", "Show cover page in two-page view", None, None, TwoPageView, "bookmark"),

@@ -10,7 +10,7 @@ use craft::ui::primitives::textures::{LoadFailure, LoadedPicture, Revision, Thum
 use egui::{Color32, ColorImage, Rect};
 use pdfcraft_engine::{DocId, Session};
 use pdfcraft_render::DocInfo;
-use pdfcraft_render::{PRINT_TAG, PageRenderer, RenderConfig, RenderRequest, RenderWarning, RequestKind, Tile};
+use pdfcraft_render::{PRINT_TAG, PageRenderer, RenderConfig, RenderRequest, RenderWarning, RequestKind, SharedPdf, Tile};
 
 use super::cache::{grayscale, texture_image};
 
@@ -107,6 +107,7 @@ impl RenderReports {
 pub struct DocPages<'a> {
     info: Option<&'a DocInfo>,
     bytes: Arc<Vec<u8>>,
+    shared_pdf: Option<SharedPdf>,
     config: RenderConfig,
     rotation: u16,
     revisions: Option<&'a PageRevisions>,
@@ -120,6 +121,7 @@ impl<'a> DocPages<'a> {
         Self {
             info: document.map(|d| &d.info),
             bytes: document.map(|d| d.display.clone()).unwrap_or_default(),
+            shared_pdf: document.map(|d| d.renderer.shared_pdf()),
             config: session.render_config(doc).unwrap_or_default(),
             rotation: 0,
             revisions: None,
@@ -174,7 +176,7 @@ impl<'a> DocPages<'a> {
             w: (part.0 * f64::from(scale)).ceil().max(1.0) as u32,
             h: (part.1 * f64::from(scale)).ceil().max(1.0) as u32,
         });
-        let (bytes, rotation) = (self.bytes.clone(), self.rotation);
+        let (bytes, shared_pdf, rotation) = (self.bytes.clone(), self.shared_pdf.clone(), self.rotation);
         // Installed faces draw on screen only: a print preview must match the printout.
         let config = if print.is_some() { self.config.clone() } else { self.config.clone().on_screen() };
         let tag = if print.is_some() { PRINT_TAG } else { 0 };
@@ -182,8 +184,11 @@ impl<'a> DocPages<'a> {
             if cancel.is_cancelled() {
                 return Err(LoadFailure::Missing);
             }
-            let mut renderer = PageRenderer::new(bytes, config);
-            let out = renderer.render(RenderRequest { page, kind: RequestKind::Pixels, tile, scale, tag, preview: false });
+            let req = RenderRequest { page, kind: RequestKind::Pixels, tile, scale, tag, preview: false };
+            let out = match &shared_pdf {
+                Some(pool) => pool.render_sync(&config, req, &|| cancel.is_cancelled()),
+                None => PageRenderer::new(bytes, config).render(req),
+            };
             if cancel.is_cancelled() {
                 return Err(LoadFailure::Missing);
             }

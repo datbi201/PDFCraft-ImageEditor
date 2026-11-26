@@ -86,6 +86,18 @@ fn window_body(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     }
 }
 
+/// Prevents the title bar's background `DragBand::Move` hover cursor (`Grab`) from bleeding
+/// through interactive title-bar buttons that sense clicks without declaring their own cursor.
+pub(crate) fn keep_arrow_cursor(ui: &egui::Ui, hovered: bool) {
+    if hovered && !ui.input(|i| i.pointer.any_down()) {
+        craft::ui::runtime::cursor::request(
+            ui.ctx(),
+            craft::behavior::Cursor::System(craft::behavior::CursorIcon::Default),
+            craft::behavior::CursorPriority::DropTarget,
+        );
+    }
+}
+
 /// The title bar: Home, the document tabs and Open, then the community, shortcuts, theme and
 /// Preferences buttons. The window's caption buttons are the bar's own.
 fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
@@ -99,19 +111,29 @@ fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let theme_label = format!("{}: {theme_label}", tl!("Display theme"));
     let out = TitleBar::new()
         .trailing(|ui, _| {
-            Button::command("help.discord").label("Discord").icon(IconId::new("messages-square")).tooltip(tl!("Join the ArtCraft Discord")).show(ui);
-            IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
+            let discord = Button::command("help.discord")
+                .label("Discord")
+                .icon(IconId::new("messages-square"))
+                .tooltip(tl!("Join the ArtCraft Discord"))
+                .show(ui);
+            keep_arrow_cursor(ui, discord.response().hovered());
+            let shortcuts = IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
+            keep_arrow_cursor(ui, shortcuts.response().hovered());
             let theme_button = IconButton::command(IconId::new(theme_icon), ThemeChoice::NextMode.command()).label(theme_label.clone()).show(ui);
+            keep_arrow_cursor(ui, theme_button.response().hovered());
             let opener = theme_button.response().clone();
             Menu::context(tl!("Appearance"), &opener).show(ui, |ui, _| {
                 let appearance = CommandRef::with_params("app.preferences", serde_json::json!({ "tab": "appearance" }));
                 MenuItem::command(appearance).label(tl!("Appearance settings…")).show(ui);
             });
-            IconButton::command(IconId::new("settings"), "app.preferences").show(ui);
+            let prefs = IconButton::command(IconId::new("settings"), "app.preferences").show(ui);
+            keep_arrow_cursor(ui, prefs.response().hovered());
         })
         .show(ui, |ui, _| {
-            let home = app.active.is_none() && !app.combine_showing();
-            if IconButton::new(IconId::new(HOME_ICON)).label(tl!("Home")).selected(home).show(ui).clicked() {
+            let home_selected = app.active.is_none() && !app.combine_showing();
+            let home = IconButton::new(IconId::new(HOME_ICON)).label(tl!("Home")).selected(home_selected).show(ui);
+            keep_arrow_cursor(ui, home.response().hovered());
+            if home.clicked() {
                 app.active = None;
                 app.combine_tab.focused = false;
             }

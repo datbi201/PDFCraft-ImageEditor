@@ -8,6 +8,7 @@ use craft::menu::Target;
 use craft::ui::bars::{Bar, BarKind};
 use craft::ui::buttons::{CommandSearch, IconButton};
 use craft::ui::contract::{Bind, CollectionEvent, Props as _, Show as _, ShowCollection as _, ShowContainer as _};
+use craft::ui::display::Divider;
 use craft::ui::layout_components::Row;
 use craft::ui::menu::HelpEntry;
 use craft::ui::patterns::panels::CommandPalette;
@@ -47,10 +48,9 @@ impl ItemSource<usize> for ModeTabs {}
 pub(super) fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let hidden = app.hidden_interface();
     let menus = app.native_menu.is_none() && !hidden.menubar;
-    Row::new().show(ui, |ui, _| {
-        if menus {
-            app.menu_bar_ui(ui);
-        }
+    let avail = ui.available_rect_before_wrap();
+    let rtl = ui.layout().prefer_right_to_left();
+    let row = Row::new().show(ui, |ui, _| {
         // Production replaces the search field with its icon when the field cannot keep its minimum width.
         let compact_search = ui.available_width() < 140.0 + 116.0;
         // Below room for the current mode, the search icon and the three document buttons, the buttons give way
@@ -76,6 +76,13 @@ pub(super) fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
             })
             .show(ui, |ui, _| {
+                // Keep MenuBarUi and ModeTabs inside the same Bar body so both share one vertical center/padding.
+                if menus {
+                    app.menu_bar_ui(ui);
+                }
+                if menus && !hidden.toolbar {
+                    Divider::vertical().show(ui);
+                }
                 if hidden.toolbar {
                     return;
                 }
@@ -95,6 +102,26 @@ pub(super) fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
             });
     });
+    let taken = row.output.rect;
+    let drag_rect = if rtl {
+        egui::Rect::from_min_max(egui::pos2(avail.left(), taken.top()), egui::pos2(taken.left(), taken.bottom()))
+    } else {
+        egui::Rect::from_min_max(egui::pos2(taken.right(), taken.top()), egui::pos2(avail.right(), taken.bottom()))
+    };
+    if drag_rect.width() > 4.0 && !app.palette_open && !app.modal_open() {
+        let press_origin = ui.input(|i| i.pointer.press_origin());
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        let hovered = pointer_pos.is_some_and(|p| drag_rect.contains(p));
+        let pressed_here = press_origin.is_some_and(|p| drag_rect.contains(p));
+        if hovered {
+            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            } else if pressed_here && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.pointer.is_decidedly_dragging()) {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        }
+    }
     if app.palette_open {
         let ctx = ui.ctx().clone();
         let entries = palette_entries(app, &ctx);
@@ -121,4 +148,35 @@ fn palette_entries(app: &PdfCraftApp, ctx: &egui::Context) -> Vec<HelpEntry> {
         }
     }
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use crate::PdfCraftApp;
+
+    #[test]
+    fn titlebar_buttons_keep_default_cursor_and_mode_bar_aligns() {
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|cc| {
+            PdfCraftApp::install_runtime(&cc.egui_ctx);
+            let mut app = PdfCraftApp::for_unit_tests();
+            app.set_option(&egui::Context::default(), "language", "en").unwrap();
+            app
+        });
+        h.run_steps(4);
+
+        // Hovering Preferences on the title bar must keep the normal pointer, not the window-drag Grab cursor.
+        let prefs_center = h.get_by_label_contains("Preferences").rect().center();
+        h.hover_at(prefs_center);
+        h.run_steps(2);
+        assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Default);
+
+        // MenuBar ("File") and ModeTabs ("All tools") sit in the same Bar with aligned vertical centers.
+        let file_rect = h.get_by_label("File").rect();
+        let all_tools_rect = h.get_by_role_and_label(egui::accesskit::Role::Tab, "All tools").rect();
+        let dy = (file_rect.center().y - all_tools_rect.center().y).abs();
+        assert!(dy <= 2.5, "MenuBar 'File' ({file_rect:?}) and 'All tools' ({all_tools_rect:?}) vertical centers differ by {dy}");
+    }
 }

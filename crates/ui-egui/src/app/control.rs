@@ -122,7 +122,8 @@ impl PdfCraftApp {
                 v.view.fit = canvas::Fit::None;
             }
             ("layout", Some(v)) => {
-                let (display, continuous) = canvas::parse_display_token(value).ok_or("layout must be single, continuous, two-up or two-page")?;
+                let (display, continuous) =
+                    canvas::parse_display_token(value).ok_or("layout must be single, continuous, two-up, two-page or columns")?;
                 (v.view.display, v.view.continuous) = (display, continuous);
             }
             ("continuous", Some(v)) => match value {
@@ -178,7 +179,7 @@ impl PdfCraftApp {
             }
             ("default-layout", _) => {
                 let (display, continuous) =
-                    canvas::parse_display_token(value).ok_or("default-layout must be single, continuous, two-up or two-page")?;
+                    canvas::parse_display_token(value).ok_or("default-layout must be single, continuous, two-up, two-page or columns")?;
                 (self.view_defaults.display, self.view_defaults.continuous) = (display, continuous);
             }
             ("default-continuous", _) => {

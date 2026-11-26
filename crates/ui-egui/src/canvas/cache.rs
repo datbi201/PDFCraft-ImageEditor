@@ -140,19 +140,21 @@ impl DocView {
         let Some(doc) = session.get(self.id) else { return };
         let Some(queue) = self.session.text_queue.as_ref() else { return };
         let config = session.render_config(self.id).unwrap_or_default();
+        let shared_pdf = doc.renderer.shared_pdf();
         let ranked = visible.iter().map(|p| (*p, Priority::VISIBLE)).chain(rest.iter().map(|p| (*p, Priority::BACKGROUND)));
         for (page, priority) in ranked {
             if page >= self.page_count || self.session.texts.contains_key(&page) || self.session.text_failed.contains(&page) || queue.contains(&page)
             {
                 continue;
             }
-            let (bytes, config) = (doc.display.clone(), config.clone());
+            let (shared_pdf, config) = (shared_pdf.clone(), config.clone());
             queue.submit(page, priority, move |cancel| {
                 if cancel.is_cancelled() {
                     return TextOutcome::default();
                 }
-                let mut renderer = pdfcraft_render::PageRenderer::new(bytes, config);
-                let out = renderer.render(RenderRequest { page, kind: RequestKind::Text, scale: 1.0, ..Default::default() });
+                let out = shared_pdf.render_sync(&config, RenderRequest { page, kind: RequestKind::Text, scale: 1.0, ..Default::default() }, &|| {
+                    cancel.is_cancelled()
+                });
                 TextOutcome { cut: out.warnings.contains(&pdfcraft_render::RenderWarning::ContentTruncated), text: out.text, error: out.error }
             });
         }

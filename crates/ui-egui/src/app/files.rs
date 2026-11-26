@@ -945,7 +945,7 @@ impl PdfCraftApp {
     /// Apply an explicit launch layout after the command-line display overrides settle.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_launch_layout(&mut self, value: &str) -> Result<(), String> {
-        let (layout, continuous) = canvas::parse_display_token(value).ok_or("layout must be single, continuous, two-up or two-page")?;
+        let (layout, continuous) = canvas::parse_display_token(value).ok_or("layout must be single, continuous, two-up, two-page or columns")?;
         self.launch_layout = Some((layout, continuous));
         // The option may arrive before any flagged open; don't consume it before it has a target.
         if self.launch_display_target.is_some() {

@@ -28,7 +28,7 @@ pub use link_area::{MAX_LINK_QUADS, MAX_URI_BASE_BYTES, link_quads, quad_contain
 pub use pixels::Pixels;
 pub use raster::{
     MAX_PIXELS, MAX_SIDE, PRINT_TAG, PageRenderer, RenderConfig, RenderPool, RenderRequest, RenderStats, RenderWarning, RenderedPage, RequestKind,
-    Retiring, Tile, device_pixels, effective_scale,
+    Retiring, SharedPdf, Tile, device_pixels, effective_scale,
 };
 pub use reading::{ReadingColors, ReadingParams};
 pub use text::{PageText, TextGlyph};

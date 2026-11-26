@@ -152,6 +152,7 @@ const NAVIGATION: &[&str] = &["view.focus_page_input", SEP, "view.previous_view"
 const DISPLAY: &[&str] = &[
     "view.layout.single",
     "view.layout.two_up",
+    "view.layout.columns",
     SEP,
     "view.continuous",
     "view.page_gaps",
@@ -406,7 +407,7 @@ impl PdfCraftApp {
         if let Some(c) = shortcut.and_then(chord) {
             item = item.shortcut(c);
         }
-        if matches!(id, "view.layout.single" | "view.layout.two_up") || THEMES.contains(&id) {
+        if matches!(id, "view.layout.single" | "view.layout.two_up" | "view.layout.columns") || THEMES.contains(&id) {
             item = item.radio(false);
         }
         item.into()

@@ -496,6 +496,79 @@ impl RenderPool {
         drop(self);
         Retiring(handles)
     }
+
+    /// A lightweight handle sharing this pool's lazily-parsed document so external worker queues
+    /// avoid re-parsing the PDF on every page render or zoom step.
+    pub fn shared_pdf(&self) -> SharedPdf {
+        SharedPdf {
+            #[cfg(not(target_arch = "wasm32"))]
+            shared: Arc::clone(&self.shared),
+            bytes: Arc::clone(&self.bytes),
+            password: self.config.password.clone(),
+        }
+    }
+}
+
+/// A shareable handle to a [`RenderPool`]'s lazily-parsed `Pdf` for synchronous rendering on external
+/// worker queues (such as the UI texture loader and text-layer queue) with arbitrary [`RenderConfig`].
+#[derive(Clone)]
+pub struct SharedPdf {
+    #[cfg(not(target_arch = "wasm32"))]
+    shared: Arc<Shared>,
+    bytes: Arc<Vec<u8>>,
+    password: Option<Arc<str>>,
+}
+
+impl SharedPdf {
+    /// Render one request using the pool's shared parsed PDF when available, falling back to a
+    /// private parse if the shared parser was retired.
+    pub fn render_sync(&self, config: &RenderConfig, req: RenderRequest, cancelled: &dyn Fn() -> bool) -> RenderedPage {
+        let start = Stopwatch::start();
+        if cancelled() {
+            return finish(req, start, Err(("cancelled".into(), false)), Vec::new());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = &self.password;
+            let mut renderer = PageRenderer::new(self.bytes.clone(), config.clone());
+            return renderer.render(req);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.shared.stats.record_request(req);
+            let load = || {
+                self.shared.stats.parser_builds.fetch_add(1, Ordering::Relaxed);
+                parse(&self.bytes, self.password.as_deref())
+            };
+            let acquired = self.shared.parser.acquire(load, cancelled);
+            if cancelled() {
+                return finish(req, start, Err(("cancelled".into(), false)), Vec::new());
+            }
+            let private_pdf;
+            let (pdf, from_shared) = match acquired {
+                Some(Some(ref shared_pdf)) => (Some(&**shared_pdf), true),
+                Some(None) => (None, true),
+                None => {
+                    private_pdf = load();
+                    (private_pdf.as_ref(), false)
+                }
+            };
+            let warnings = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let settings = warning_settings(&worker_settings(config, &stop), warnings.clone());
+            let cache = RenderCache::new();
+            let r = catch_unwind(AssertUnwindSafe(|| match pdf {
+                Some(pdf) => render_page(pdf, &cache, &settings, config, req),
+                None => Err(("the document could not be parsed".into(), false)),
+            }))
+            .unwrap_or_else(|panic| Err((format!("renderer crashed on page {}: {}", req.page + 1, panic_message(&panic)), true)));
+            let request_warnings = take_warnings(&warnings);
+            if matches!(r, Err((_, true))) && from_shared {
+                self.shared.parser.abandon();
+            }
+            finish(req, start, r, request_warnings)
+        }
+    }
 }
 
 impl Drop for RenderPool {
@@ -757,5 +830,39 @@ pub(super) fn worker(
         {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_pdf_tests {
+    use super::*;
+
+    const MINIMAL_PDF: &[u8] = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+    #[test]
+    fn shared_pdf_reuses_one_parser_and_honours_cancellation() {
+        let pool = RenderPool::new(Arc::new(MINIMAL_PDF.to_vec()), 1, RenderConfig::default());
+        let shared = pool.shared_pdf();
+        let req_pixels = RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() };
+        let req_text = RenderRequest { page: 0, kind: RequestKind::Text, scale: 1.0, ..Default::default() };
+
+        let first = shared.render_sync(&RenderConfig::default().on_screen(), req_pixels, &|| false);
+        assert!(first.error.is_none(), "expected pixels render: {:?}", first.error);
+        assert!(first.width > 0 && first.height > 0);
+
+        let second = shared.render_sync(&RenderConfig::default(), req_text, &|| false);
+        assert!(second.error.is_none(), "expected text render: {:?}", second.error);
+        assert!(second.text.is_some());
+
+        let builds = pool.stats().parser_builds;
+        assert!(builds <= 1, "shared parser should build at most once, got {builds}");
+
+        let cancelled = shared.render_sync(&RenderConfig::default(), req_pixels, &|| true);
+        assert!(cancelled.error.is_some());
     }
 }

@@ -124,6 +124,29 @@ impl DocView {
         self.view.display == PageDisplay::TwoUp
     }
 
+    /// Switches to multipage grid (`PageDisplay::Columns`) with continuous scrolling.
+    /// When the current fit or zoom shows fewer than 2 columns, sets a custom overview zoom
+    /// fitting up to 3 columns across the viewport so the grid is immediately visible.
+    pub fn enter_page_grid(&mut self) {
+        self.view.display = PageDisplay::Columns;
+        self.view.continuous = true;
+        let vw = f64::from(self.viewport.width()).max(600.0);
+        let gap = if self.view.page_gaps { self.spacing.map_or(16.0, |s| s.gap) } else { 0.0 };
+        let side = self.spacing.map_or(16.0, |s| s.side);
+        let turned = self.view.rotation % 180 == 90;
+        let widest_pt = self.page_sizes.iter().map(|&(w, h)| f64::from(if turned { h } else { w })).fold(0.0_f64, f64::max).max(1.0);
+        let widest_px = widest_pt * f64::from(PT);
+        let usable = (vw - 2.0 * side - gap).max(widest_px * 0.2);
+        let cur_cols = if self.view.fit == Fit::None { ((usable + gap) / (widest_px * self.view.zoom + gap)).floor() as usize } else { 1 };
+        if cur_cols < 2 {
+            let target_cols = 3.0_f64.min((self.page_count.max(2)) as f64);
+            let ideal = ((usable - (target_cols - 1.0) * gap) / (target_cols * widest_px)).clamp(0.15, 0.55);
+            self.view.fit = Fit::None;
+            self.view.zoom = ideal;
+        }
+        self.view.go_to(self.view.current);
+    }
+
     /// The page (or spread) the view shows first, as `FitWindow` sizes the window to it
     /// ([`crate::viewer_prefs::window_commands`]). `None` when there is no such page.
     ///
@@ -173,5 +196,65 @@ impl DocView {
     pub fn parse_zoom_percent(typed: &str) -> Option<f32> {
         let percent = typed.trim().trim_end_matches('%').trim_end().parse::<f32>().ok()?;
         (percent.is_finite() && percent > 0.0).then_some(percent / 100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use craft::ui::runtime::commands::CommandRef;
+    use egui_kittest::Harness;
+
+    use crate::PdfCraftApp;
+    use crate::canvas::PageDisplay;
+    use crate::commands::catalog;
+
+    const PAGES: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 /MediaBox [0 0 300 180] >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R >> endobj
+4 0 obj << /Type /Page /Parent 2 0 R >> endobj
+5 0 obj << /Type /Page /Parent 2 0 R >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+
+    #[test]
+    fn page_grid_layout_adapts_columns_to_zoom_and_viewport_width() {
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|cc| {
+            PdfCraftApp::install_runtime(&cc.egui_ctx);
+            let mut app = PdfCraftApp::for_unit_tests();
+            app.set_option(&cc.egui_ctx, "language", "en").unwrap();
+            app.open_bytes(&cc.egui_ctx, "pages.pdf", None, PAGES.to_vec()).unwrap();
+            app.set_option(&cc.egui_ctx, "left", "closed").unwrap();
+            app.set_option(&cc.egui_ctx, "panel", "none").unwrap();
+            app
+        });
+        h.run_steps(6);
+
+        let ctx = h.ctx.clone();
+        h.state_mut().execute(&ctx, "view.layout.columns");
+        h.run_steps(4);
+        assert_eq!(h.state().views[0].view.display, PageDisplay::Columns);
+        assert!(h.state().views[0].continuous());
+        assert_eq!(catalog::checked(h.state(), &CommandRef::new("view.layout.columns")), Some(true));
+        assert_eq!(catalog::checked(h.state(), &CommandRef::new("view.layout.single")), Some(false));
+
+        // Smart overview zoom fits multiple pages on the first row when entering Page grid.
+        let p0 = h.state().views[0].page_screen_rect(0).expect("page 1 placed");
+        let p1 = h.state().views[0].page_screen_rect(1).expect("page 2 placed");
+        assert!((p0.min.y - p1.min.y).abs() < 1.0, "pages 1 and 2 sit on the same grid row: p0={p0:?}, p1={p1:?}");
+        assert!(p1.min.x > p0.max.x, "page 2 sits to the right of page 1");
+
+        // Zooming in far enough drops the grid down to 1 column per row.
+        h.state_mut().set_option(&ctx, "zoom", "180").unwrap();
+        h.state_mut().views[0].go_to_page(0);
+        h.run_steps(4);
+        let z0 = h.state().views[0].page_screen_rect(0).expect("page 1 zoomed");
+        let z1 = h.state().views[0].page_screen_rect(1).expect("page 2 zoomed");
+        assert!(z1.min.y > z0.max.y, "zoomed in stacks page 2 below page 1: z0={z0:?}, z1={z1:?}");
+
+        // Layout and default-layout tokens round-trip through "columns".
+        h.state_mut().set_option(&ctx, "layout", "columns").unwrap();
+        h.state_mut().set_option(&ctx, "default-layout", "columns").unwrap();
+        assert_eq!(h.state().view_defaults.display, PageDisplay::Columns);
     }
 }

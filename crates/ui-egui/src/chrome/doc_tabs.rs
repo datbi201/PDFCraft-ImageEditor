@@ -49,7 +49,8 @@ pub(crate) fn strip(app: &mut PdfCraftApp, ui: &mut egui::Ui, place: Place) {
     let mut strip = DocumentTabs::new(label.to_string(), &tabs).reorderable(true);
     if place == Place::Main {
         strip = strip.trailing(|ui| {
-            Button::command("file.open").variant(craft::theme::Variant::GHOST).icon(IconId::new("plus")).show(ui);
+            let open = Button::command("file.open").variant(craft::theme::Variant::GHOST).icon(IconId::new("plus")).show(ui);
+            super::keep_arrow_cursor(ui, open.response.hovered());
         });
     }
     if let Some(selected) = selected {

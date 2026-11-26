@@ -334,7 +334,11 @@ fn mode_table<'a>() -> Table<'a, Mode> {
 }
 
 fn layout_table<'a>() -> Table<'a, PageDisplay> {
-    vec![(PageDisplay::Single, "single", tl!("Single page")), (PageDisplay::TwoUp, "two-up", tl!("Two-page view"))]
+    vec![
+        (PageDisplay::Single, "single", tl!("Single page")),
+        (PageDisplay::TwoUp, "two-up", tl!("Two-page view")),
+        (PageDisplay::Columns, "columns", tl!("Page grid")),
+    ]
 }
 
 fn fit_table<'a>() -> Table<'a, Fit> {

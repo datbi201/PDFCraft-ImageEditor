@@ -9,7 +9,7 @@ use craft::ui::contract::{Bind, Outcome as _, Props as _, Show as _, ShowContain
 use craft::ui::menu::{Menu, MenuItem};
 use craft::ui::popover::DropVeil;
 use craft::ui::runtime::env::WindowKey;
-use craft::ui::shell::{AppShell, Slot, TitleBar};
+use craft::ui::shell::{AppShell, Slot, SlotSize, TitleBar};
 
 use crate::panes::Place;
 use crate::{PdfCraftApp, side_panels};
@@ -30,8 +30,10 @@ pub(crate) fn shell(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     craft::ui::dialog::set_close_button(ui.ctx(), false);
     let hidden = app.hidden_interface();
     let modes_visible = !hidden.mode_bar(app.native_menu.is_some());
+    let split_menus = mode_bar::split_menus(app, ui.available_width());
     let window_ui = !hidden.window_ui;
-    let fallback_rail = window_ui && side_panels::rail_anchor(app).is_none();
+    let bottom_controls = window_ui && !app.full_screen_document() && app.active_ids().is_some() && view_rail::uses_bottom(ui.ctx());
+    let fallback_rail = window_ui && !bottom_controls && side_panels::rail_anchor(app).is_none();
     let out = AppShell::new(WindowKey::main())
         .toast_alignment(egui::Align2::CENTER_BOTTOM)
         .screen_mode(Bind::given(app.screen_mode))
@@ -41,13 +43,21 @@ pub(crate) fn shell(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
         // with them, Home beside the lights and the tabs reading from the right (production 4448ee940).
         .title_follows_lights(true)
         .title_bar(|ui, _, app: &mut PdfCraftApp| title_bar(app, ui))
-        .top(Slot::new("modes").visible(modes_visible), |ui, _, app: &mut PdfCraftApp| mode_bar::show(app, ui))
+        .top(Slot::new("window-menus").size(SlotSize::Content).visible(modes_visible && split_menus), |ui, _, app: &mut PdfCraftApp| {
+            mode_bar::show_menus(app, ui);
+        })
+        .top(Slot::new("modes").size(SlotSize::Content).visible(modes_visible), move |ui, _, app: &mut PdfCraftApp| {
+            mode_bar::show(app, ui, split_menus);
+        })
         .start(
             Slot::new("view-rail-start").visible(fallback_rail && app.rail_side == craft::behavior::DockSide::Start),
             |ui, _, app: &mut PdfCraftApp| view_rail::show(app, ui),
         )
         .end(Slot::new("view-rail").visible(fallback_rail && app.rail_side == craft::behavior::DockSide::End), |ui, _, app: &mut PdfCraftApp| {
             view_rail::show(app, ui)
+        })
+        .bottom(Slot::new("view-controls").size(SlotSize::Content).visible(bottom_controls), |ui, _, app: &mut PdfCraftApp| {
+            view_rail::bottom(app, ui)
         })
         .body(|ui, _, app: &mut PdfCraftApp| window_body(app, ui))
         .show(ui, app);
@@ -102,6 +112,9 @@ pub(crate) fn keep_arrow_cursor(ui: &egui::Ui, hovered: bool) {
 /// Preferences buttons. The window's caption buttons are the bar's own.
 fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    let width = ui.available_width();
+    let compact = width < 820.0;
+    let compact_tabs = width < 620.0;
     let (theme_icon, theme_label) = match app.theme_preference {
         ModeChoice::System => ("monitor", tl!("Use system setting")),
         ModeChoice::Light => ("sun", tl!("Light gray")),
@@ -111,33 +124,52 @@ fn title_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let theme_label = format!("{}: {theme_label}", tl!("Display theme"));
     let out = TitleBar::new()
         .trailing(|ui, _| {
-            let discord = Button::command("help.discord")
-                .label("Discord")
-                .icon(IconId::new("messages-square"))
-                .tooltip(tl!("Join the ArtCraft Discord"))
-                .show(ui);
-            keep_arrow_cursor(ui, discord.response().hovered());
-            let shortcuts = IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
-            keep_arrow_cursor(ui, shortcuts.response().hovered());
+            if !compact_tabs {
+                let discord_icon = IconId::new("messages-square");
+                let discord_hovered = if compact {
+                    IconButton::command(discord_icon, "help.discord")
+                        .label("Discord")
+                        .tooltip(tl!("Join the ArtCraft Discord"))
+                        .show(ui)
+                        .response()
+                        .contains_pointer()
+                } else {
+                    Button::command("help.discord")
+                        .label("Discord")
+                        .icon(discord_icon)
+                        .variant(craft::theme::Variant::GHOST)
+                        .tooltip(tl!("Join the ArtCraft Discord"))
+                        .show(ui)
+                        .response()
+                        .contains_pointer()
+                };
+                keep_arrow_cursor(ui, discord_hovered);
+                let shortcuts = IconButton::command(IconId::new("circle-help"), "help.shortcuts").show(ui);
+                keep_arrow_cursor(ui, shortcuts.response().contains_pointer());
+            }
             let theme_button = IconButton::command(IconId::new(theme_icon), ThemeChoice::NextMode.command()).label(theme_label.clone()).show(ui);
-            keep_arrow_cursor(ui, theme_button.response().hovered());
+            keep_arrow_cursor(ui, theme_button.response().contains_pointer());
             let opener = theme_button.response().clone();
             Menu::context(tl!("Appearance"), &opener).show(ui, |ui, _| {
                 let appearance = CommandRef::with_params("app.preferences", serde_json::json!({ "tab": "appearance" }));
                 MenuItem::command(appearance).label(tl!("Appearance settings…")).show(ui);
             });
             let prefs = IconButton::command(IconId::new("settings"), "app.preferences").show(ui);
-            keep_arrow_cursor(ui, prefs.response().hovered());
+            keep_arrow_cursor(ui, prefs.response().contains_pointer());
         })
         .show(ui, |ui, _| {
             let home_selected = app.active.is_none() && !app.combine_showing();
             let home = IconButton::new(IconId::new(HOME_ICON)).label(tl!("Home")).selected(home_selected).show(ui);
-            keep_arrow_cursor(ui, home.response().hovered());
+            keep_arrow_cursor(ui, home.response().contains_pointer());
             if home.clicked() {
                 app.active = None;
                 app.combine_tab.focused = false;
             }
-            doc_tabs::strip(app, ui, Place::Main);
+            if compact_tabs {
+                let open = IconButton::command(IconId::new("plus"), "file.open").show(ui);
+                keep_arrow_cursor(ui, open.response.contains_pointer());
+            }
+            doc_tabs::strip_with_open(app, ui, Place::Main, !compact_tabs);
         })
         .output;
     if out.close_requested {

@@ -60,9 +60,9 @@ impl PdfCraftApp {
         let eased = !self.animation_effects.reduced(None);
         options.animated_zoom = eased;
         options.eased_wheel = eased;
-        // Apply Ctrl/⌘-wheel zoom immediately per notch so page rasters update without holding
-        // stale textures frozen across a quarter-second easing window.
-        options.eased_wheel_zoom = false;
+        // Start moving on the first notch. While notches are still arriving, the page view
+        // scales the available picture and waits before requesting the new sharp raster.
+        options.eased_wheel_zoom = eased;
         options
     }
 

@@ -169,19 +169,13 @@ const START_SHARE: f32 = 0.2;
 /// Share of the rest the page area takes beside the end dock.
 const PAGE_SHARE: f32 = 0.8;
 
-/// The Tools pane's default width: production's 272 points at every window width (the framework's Format text row keeps the
-/// size field readable in it).
-const TOOLS_WIDTH: f32 = 272.0;
-/// The Tools pane's width in a narrow window, as production opened it.
-const TOOLS_WIDTH_NARROW: f32 = 272.0;
+/// The Tools pane's preferred width, before the window's available space is considered.
+pub(crate) const TOOLS_WIDTH: f32 = 272.0;
 /// How far past the Tools pane the floating toolbar starts. Production's quick bar stood 14 points into a narrow margin
 /// and was 46 points wide, so its page-side edge was 60 points into the page area (which starts 3 points past the pane,
 /// after the splitter); the rail is 52 points wide, so it starts 10 points past the pane to end just inside that edge
 /// and leave the page's margin beyond it to the page.
 const TOOLBAR_INSET: f32 = 10.0;
-
-/// Windows narrower than this keep the Tools pane at [`TOOLS_WIDTH_NARROW`]: a wider pane would leave the page area too little.
-pub(crate) const NARROW_WINDOW: f32 = 900.0;
 
 /// The arrangement of a new install: Tools at the start edge, the side-panel rail at the window edge,
 /// and the toolbar floating at the start of the page area. The side panels form one collapsed group.
@@ -199,21 +193,11 @@ pub fn default_workspace(rail_side: DockSide) -> Workspace<PanelId> {
     Workspace::new(Layout::new(Some(root), vec![floating]))
 }
 
-/// The floating quick toolbar sits in the left margin of the page area, as production's does. The page area starts where
-/// the Tools pane ends, so the toolbar moves by the pane's width when the pane closes and opens, and stays clear of the
-/// page text. A toolbar the user has dragged elsewhere (not in the strip the pane's edge defines) stays where it is.
-fn keep_toolbar_in_the_margin(app: &mut PdfCraftApp) {
-    let open = app.dock.layout().contains(&PanelId::Tools);
-    if open == app.toolbar_tools_open {
-        return;
-    }
-    app.toolbar_tools_open = open;
-    let Some(rect) = toolbar_rect(&app.dock) else { return };
-    let x = rect.min.x;
-    let target = if open { (x < TOOLS_WIDTH).then_some(x + TOOLS_WIDTH) } else { (x >= TOOLS_WIDTH).then_some((x - TOOLS_WIDTH).max(0.0)) };
-    if let Some(x) = target.filter(|x| x.is_finite()) {
-        move_toolbar(app, rect.translate(egui::vec2(x - rect.min.x, 0.0)));
-    }
+fn tools_width(workspace: &Workspace<PanelId>, edge: DockEdge) -> Option<f32> {
+    dock_columns(workspace, edge)
+        .iter()
+        .find(|column| column.panels().any(|p| *p == PanelId::Tools))
+        .map(|column| column.width.unwrap_or(TOOLS_WIDTH))
 }
 
 /// The floating toolbar's window rect, `None` when the toolbar is docked or closed.
@@ -221,35 +205,36 @@ fn toolbar_rect(workspace: &Workspace<PanelId>) -> Option<egui::Rect> {
     workspace.layout().floating.iter().find(|window| window.contains(&PanelId::Toolbar)).map(|window| window.rect)
 }
 
-/// Moves the floating toolbar's window to `rect`. A refused move (a locked layout) leaves it where it is.
-fn move_toolbar(app: &mut PdfCraftApp, rect: egui::Rect) {
-    drop(Arc::make_mut(&mut app.dock).apply(Action::move_floating(PanelId::Toolbar, rect), false, permissions));
+/// Move the default floating toolbar with the Tools pane's edge. A toolbar placed elsewhere by the user stays there.
+fn shift_margin_toolbar(workspace: &mut Arc<Workspace<PanelId>>, from: f32, to: f32) {
+    if (to - from).abs() < 0.5 {
+        return;
+    }
+    if let Some(rect) = toolbar_rect(workspace)
+        && (rect.min.x - from - TOOLBAR_INSET).abs() < 2.0
+    {
+        let rect = rect.translate(egui::vec2(to - from, 0.0));
+        drop(Arc::make_mut(workspace).apply(Action::move_floating(PanelId::Toolbar, rect), false, permissions));
+    }
 }
 
-/// The Tools pane's width follows the window across [`NARROW_WINDOW`]: production's narrower pane in a small window, the
-/// wider default in a large one. Only the crossing changes it, so a width the user dragged to is kept.
-fn fit_tools_to_window(app: &mut PdfCraftApp, window_width: f32) {
-    let narrow = window_width.is_finite() && window_width < NARROW_WINDOW;
-    if narrow == app.window_narrow {
-        return;
+/// Fit the displayed column to the window without writing a temporary width to preferences.
+fn workspace_for_width(workspace: &Arc<Workspace<PanelId>>, width: f32, tools_shown: bool) -> Arc<Workspace<PanelId>> {
+    let mut fitted = Arc::clone(workspace);
+    let start = tools_width(workspace, DockEdge::Start);
+    if !tools_shown {
+        shift_margin_toolbar(&mut fitted, start.unwrap_or_default(), 0.0);
+        return fitted;
     }
-    app.window_narrow = narrow;
-    if !app.dock.layout().contains(&PanelId::Tools) {
-        return;
-    }
-    let width = if narrow { TOOLS_WIDTH_NARROW } else { TOOLS_WIDTH };
-    // A refused resize (a locked layout) leaves the width as it is.
-    if Arc::make_mut(&mut app.dock).apply(Action::resize_column(PanelId::Tools, width), false, permissions).is_err() {
-        return;
-    }
-    // The floating toolbar sits in the page area's margin, which moved with the pane's edge.
-    let shift = if narrow { TOOLS_WIDTH_NARROW - TOOLS_WIDTH } else { TOOLS_WIDTH - TOOLS_WIDTH_NARROW };
-    if app.toolbar_tools_open
-        && let Some(rect) = toolbar_rect(&app.dock)
-        && rect.min.x >= TOOLS_WIDTH_NARROW
+    let max_tools_width = (width * 0.46).max(210.0);
+    if let Some(preferred) = start.or_else(|| tools_width(workspace, DockEdge::End))
+        && preferred > max_tools_width
+        && Arc::make_mut(&mut fitted).apply(Action::resize_column(PanelId::Tools, max_tools_width), false, permissions).is_ok()
+        && start.is_some()
     {
-        move_toolbar(app, rect.translate(egui::vec2(shift, 0.0)));
+        shift_margin_toolbar(&mut fitted, preferred, max_tools_width);
     }
+    fitted
 }
 
 /// The window edge whose dock holds `panel`, `None` when it is closed or floating.
@@ -443,6 +428,8 @@ fn refresh_specs(app: &mut PdfCraftApp) {
 /// The dock's panels over the app in one pass.
 struct Panels<'a> {
     app: &'a mut PdfCraftApp,
+    toolbar_height: f32,
+    toolbar_clearance: f32,
 }
 
 impl DockPanels<PanelId> for Panels<'_> {
@@ -471,13 +458,26 @@ impl DockPanels<PanelId> for Panels<'_> {
 
     fn group_view(&mut self, panels: &[PanelId], _active: usize, ui: &mut Ui, at: GroupAt, _cx: &mut BodyCx<'_>) -> Option<f32> {
         match at {
-            GroupAt::Measure(width) if panels.contains(&PanelId::Toolbar) => Some(crate::hotbar::measure_rail(self.app, ui, width)),
+            GroupAt::Measure(width) if panels.contains(&PanelId::Toolbar) => {
+                Some(crate::hotbar::measure_rail(self.app, ui, width).min(self.toolbar_height))
+            }
             GroupAt::Show(rect) if panels.contains(&PanelId::Toolbar) => {
-                crate::hotbar::show_rail(self.app, ui);
+                egui::ScrollArea::vertical()
+                    .id_salt("quick-toolbar-scroll")
+                    .max_height(rect.height().min(self.toolbar_height))
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| crate::hotbar::show_rail(self.app, ui));
                 Some(rect.height())
             }
             GroupAt::Show(rect) if panels.contains(&PanelId::Document) => {
-                document_view(self.app, ui, rect);
+                // Keep a usable page fitting area even when the other side is docked.
+                let clearance = self.toolbar_clearance.min((rect.width() - 180.0).max(0.0));
+                if clearance > 0.0 {
+                    let page = rect.with_min_x(rect.left() + clearance);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(page), |ui| document_view(self.app, ui, page));
+                } else {
+                    document_view(self.app, ui, rect);
+                }
                 Some(rect.height())
             }
             _ => None,
@@ -494,6 +494,11 @@ impl DockPanels<PanelId> for Panels<'_> {
                 } else if crate::organize_panel::showing(self.app) {
                     IconButton::command(IconSpec::svg(IconId::new("chevron-left")), CommandRef::new("tools.all")).show(ui);
                     IconButton::command(IconSpec::svg(IconId::new("close")), CommandRef::new("page.organize")).label(tl!("Close panel")).show(ui);
+                } else if self.app.left == LeftPanel::Tool("edit") {
+                    if self.app.mode != Mode::Edit {
+                        IconButton::command(IconId::new("chevron-left"), "tools.all").show(ui);
+                    }
+                    IconButton::command(IconId::new("settings"), "app.preferences").show(ui);
                 } else if self.app.left == LeftPanel::AllTools {
                     IconButton::command(IconSpec::svg(IconId::new("maximize-2")), CommandRef::new("tools.expand")).show(ui);
                 }
@@ -585,11 +590,24 @@ pub fn dock(app: &mut PdfCraftApp, ui: &mut Ui) {
     let bare = app.full_screen_document() || app.hidden_interface().window_ui;
     let organizing = app.active_ids().and_then(|(index, _)| app.views.get(index)).is_some_and(|view| view.organize);
     let toolbar = active && !app.hotbar_hidden() && !organizing && !expanded;
-    let anchor = rail_anchor(app);
-    keep_toolbar_in_the_margin(app);
-    fit_tools_to_window(app, ui.ctx().content_rect().width());
+    let anchor = if crate::chrome::view_rail::uses_bottom(ui.ctx()) { None } else { rail_anchor(app) };
+    let preferred_margin = tools_width(&app.dock, DockEdge::Start).unwrap_or_default();
+    shift_margin_toolbar(&mut app.dock, app.toolbar_margin_width, preferred_margin);
+    app.toolbar_margin_width = preferred_margin;
     refresh_specs(app);
-    let workspace = Arc::clone(&app.dock);
+    let width = ui.available_width();
+    let tools_shown = !bare && !read && !expanded;
+    let workspace = workspace_for_width(&app.dock, width, tools_shown);
+    let mut toolbar_clearance = 0.0;
+    if toolbar && width < 700.0 && !ui.layout().prefer_right_to_left() {
+        let margin = tools_width(&workspace, DockEdge::Start).filter(|_| tools_shown).unwrap_or_default();
+        if let Some(rect) = toolbar_rect(&workspace)
+            && (rect.left() - margin - TOOLBAR_INSET).abs() < 2.0
+        {
+            // The default floating bar covers the page's fit-width area in a narrow window.
+            toolbar_clearance = TOOLBAR_INSET + rect.width().max(52.0) + 4.0;
+        }
+    }
     // The rail lists the Accessibility Checker once the document has a report, and Search and Compare only while
     // they show; their commands open them.
     let open = open_side(&workspace);
@@ -619,7 +637,9 @@ pub fn dock(app: &mut PdfCraftApp, ui: &mut Ui) {
     }
     let shown = std::mem::take(&mut app.dock_shown);
     let specs = std::mem::take(&mut app.dock_specs);
-    let mut panels = Panels { app: &mut *app };
+    // Leave room for the grip and tab header above the scrollable quick tools.
+    let toolbar_height = (ui.available_height() - 54.0 - inset).max(36.0);
+    let mut panels = Panels { app: &mut *app, toolbar_height, toolbar_clearance };
     // The side panels' icons are production's rail: they stay beside the expanded column, a click on one opens its
     // panel docked, and a click on the open panel's icon closes it.
     let config = DockConfig::default()
@@ -680,23 +700,30 @@ fn show_panel(app: &mut PdfCraftApp, panel: PanelId, visible: bool) -> Result<()
 /// expands the column with it in front, hiding it collapses the column to its icons. One closed from its tab comes
 /// back to its recorded place first.
 fn set_shown(workspace: &mut Workspace<PanelId>, panel: PanelId, visible: bool) -> Result<(), DockError> {
+    if panel == PanelId::Tools && visible && !workspace.layout().contains(&panel) {
+        // Try the saved location first. The protected document rejects a generic tab fallback,
+        // so an absent or invalid location cannot silently open Tools as a floating window.
+        if workspace.set_visible(panel, true, Some(PanelId::Document), false, permissions).is_err() {
+            let resize = Action::resize_column(panel, TOOLS_WIDTH);
+            match edge_target(workspace, DockEdge::Start) {
+                Target::At { anchor, placement, .. } => {
+                    workspace.apply_all([Action::open_at(panel, anchor, placement), resize], false, permissions)?;
+                }
+                target => {
+                    // An edge placement opens a frame. Move that frame into the new dock
+                    // within the same transaction, so only the finished column is shown.
+                    let open = Action::open_at(panel, PanelId::Document, DockPlacement::Edge(DockSide::Start));
+                    workspace.apply_all([open, Action::move_panel(panel, target), resize], false, permissions)?;
+                }
+            }
+        }
+        return Ok(());
+    }
     if panel.side().is_none() {
         return workspace.set_visible(panel, visible, None, false, permissions);
     }
     if visible {
-        if !workspace.layout().contains(&panel) && panel == PanelId::Tools {
-            // Try restoring from hidden history first; fall back to opening on the Start edge rather than
-            // anchoring on `PanelId::Toolbar` (which floats and forbids sharing a column).
-            if workspace.set_visible(panel, true, None, false, permissions).is_err() {
-                let action = match edge_target(workspace, DockEdge::Start) {
-                    Target::At { anchor, placement, .. } => Action::open_at(panel, anchor, placement),
-                    _ => Action::open_at(panel, PanelId::Document, DockPlacement::Edge(DockSide::Start)),
-                };
-                workspace.apply(action, false, permissions)?;
-            }
-        } else {
-            workspace.set_visible(panel, true, None, false, permissions)?;
-        }
+        workspace.set_visible(panel, true, None, false, permissions)?;
         return workspace.apply(Action::set_iconic(panel, false), false, permissions).map(drop);
     }
     if workspace.layout().panel_state(&panel) != PanelState::Front {
@@ -1249,15 +1276,28 @@ mod tests {
         let mut workspace = default_workspace(DockSide::End);
         workspace.set_visible(PanelId::Tools, false, None, false, permissions).unwrap();
         assert!(!workspace.layout().contains(&PanelId::Tools));
-        // Simulates reopening via fallback when Toolbar is floating (shares_column=false).
+        let mut stripped = Workspace::new(workspace.layout().clone());
+        // Reopening restores a recorded column beside the document.
         set_shown(&mut workspace, PanelId::Tools, true).unwrap();
         assert!(workspace.layout().contains(&PanelId::Tools));
         assert_eq!(edge_of(&workspace, PanelId::Tools), Some(DockEdge::Start));
 
         // Even when the workspace drops hidden history (or a layout lacks Tools while Toolbar floats), opening never refuses.
-        let mut stripped = Workspace::new(workspace.layout().clone());
         set_shown(&mut stripped, PanelId::Tools, true).unwrap();
         assert!(stripped.layout().contains(&PanelId::Tools));
         assert_eq!(edge_of(&stripped, PanelId::Tools), Some(DockEdge::Start));
+    }
+
+    #[test]
+    fn compact_dock_retains_the_saved_panel_width_and_toolbar_position() {
+        let mut workspace = Arc::new(default_workspace(DockSide::End));
+        Arc::make_mut(&mut workspace).apply(Action::resize_column(PanelId::Tools, 320.0), false, permissions).unwrap();
+        shift_margin_toolbar(&mut workspace, TOOLS_WIDTH, 320.0);
+        let small = workspace_for_width(&workspace, 480.0, true);
+        let compact_width = tools_width(&small, DockEdge::Start).unwrap();
+        assert!(compact_width < 240.0);
+        assert!((toolbar_rect(&small).unwrap().min.x - compact_width - TOOLBAR_INSET).abs() < 1.0);
+        assert_eq!(tools_width(&workspace, DockEdge::Start), Some(320.0));
+        assert!(Arc::ptr_eq(&workspace_for_width(&workspace, 1200.0, true), &workspace));
     }
 }

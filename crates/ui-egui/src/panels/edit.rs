@@ -1,7 +1,7 @@
 use craft::behavior::{IconId, Selection};
-use craft::ui::buttons::IconButton;
+use craft::ui::buttons::{Button, IconButton};
 use craft::ui::contract::{
-    Bind, Entry, Outcome as _, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Trigger, clicked,
+    Bind, Entry, Outcome as _, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Trigger, clicked,
 };
 use craft::ui::display::{Shade, Text};
 use craft::ui::layout_components::{Row, Stack};
@@ -9,7 +9,7 @@ use craft::ui::list::{ListRow, RowInk, ThumbAspect};
 use craft::ui::menu::Menu;
 use craft::ui::primitives::IconSpec;
 use craft::ui::runtime::env::Label;
-use craft::ui::sections::{HeaderAction, HeaderCommand, Panel, Section};
+use craft::ui::sections::{HeaderAction, Panel, Section};
 use craft::ui::tile_grid::{CaptionPlace, Tile, TileGrid, TileGroup};
 
 use super::{Availability, PdfCraftApp, ToolGroup, ToolItem, catalog};
@@ -23,26 +23,18 @@ const EDIT_CONTENT_SHOWN: usize = 5;
 /// Other options: the tools Acrobat's Edit panel links to.
 const EDIT_OTHER_TOOLS: [&str; 3] = ["combine", "redact", "form"];
 
-/// Edit a PDF, laid out as Acrobat's Edit panel: the title with Preferences and Close; Format text
+/// Edit a PDF: Format text
 /// while text is being edited or added; Modify page as a row of icon buttons and Organize pages;
 /// Add content with the rarer items under More; and Other options, the neighbouring tools.
-/// Edit text & images itself is on the floating toolbar, and on from the moment Edit opens.
+/// Edit text & images is also on the floating toolbar.
 /// Every item comes from the catalogue, so its label, icon and availability have one source.
 pub(super) fn edit_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, g: &'static ToolGroup) {
     let items = || g.sections.iter().flat_map(|s| s.items.iter());
     let item = |command: &str| items().find(|i| i.command == command);
     let mut run = None;
     let mut tool = None;
-    // Back to All tools only when Edit was opened from there; the Edit tab is its own way back.
-    let from_all_tools = app.mode != crate::Mode::Edit;
-    // "Edit" under the Edit tab, as Acrobat titles it; the tool's own name from All tools.
-    let title = if from_all_tools { tl!(g.label) } else { tl!("Edit") }.to_string();
-    let mut commands = Vec::new();
-    if from_all_tools {
-        commands.push(HeaderCommand::new(IconId::new("chevron-left"), "tools.all"));
-    }
-    commands.push(HeaderCommand::new(IconId::new("settings"), "app.preferences"));
-    let shown = Panel::new(title).titled().commands(commands).actions([HeaderAction::Close]).show(ui, |ui, _| {
+    Panel::new(tl!("Edit").to_string()).pad(Pad::None).show(ui, |ui, _| {
+        Button::command("edit.edit_text").show(ui);
         // Several objects selected: how many, and how to move them. Acrobat's panel has no idle hint.
         let count =
             app.active_ids().filter(|_| app.quick_tool == crate::QuickTool::EditText).map_or(0, |(i, _)| app.views[i].session.objects.count());
@@ -54,7 +46,7 @@ pub(super) fn edit_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, g: &'static T
         format_section(app, ui);
 
         Section::fixed(tl!("Modify page").to_string()).show(ui, |ui, _| {
-            Row::new().show(ui, |ui, _| {
+            Row::new().wrap(true).show(ui, |ui, _| {
                 for i in EDIT_PAGE_BUTTONS.iter().filter_map(|c| item(c)) {
                     // Enabled as the command itself is: a document that forbids page assembly refuses these.
                     IconButton::command(IconSpec::svg(IconId::new(i.icon)), i.command).show(ui);
@@ -109,9 +101,6 @@ pub(super) fn edit_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, g: &'static T
             }
         });
     });
-    if shown.output.closed.is_some() || shown.output.action == Some(HeaderAction::Close) {
-        app.set_left_open(false);
-    }
     if let Some(id) = tool {
         app.select_tool(ui.ctx(), id);
     }

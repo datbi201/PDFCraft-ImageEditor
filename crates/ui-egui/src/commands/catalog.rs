@@ -25,7 +25,7 @@ const CATALOG_ONLY: &[(&str, &str, &str)] = &[
     // Labels distinct from the Combine grid's Expand and Collapse, which can show beside them.
     ("tools.expand", "Expand all tools", "maximize-2"),
     ("tools.collapse", "Collapse all tools", "minimize-2"),
-    ("tools.all", "Back to all tools", "layout-grid"),
+    ("tools.all", "Back to all tools", "grid"),
     // The rail's button names the side it moves the rail to.
     ("view.rail.left", "Dock navigation rail on Left", "panel-left"),
     ("view.rail.right", "Dock navigation rail on Right", "panel-right"),

@@ -122,7 +122,7 @@ pub(crate) fn page(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             IconButton::command(IconId::new("undo-2"), "edit.undo").enabled(app.combine_can_undo(true)).show(ui);
             IconButton::command(IconId::new("redo-2"), "edit.redo").enabled(app.combine_can_undo(false)).show(ui);
             let views = [
-                Entry::new(CombineView::Grid, tl!("Grid view")).icon(IconId::new("layout-grid")),
+                Entry::new(CombineView::Grid, tl!("Grid view")).icon(IconId::new("grid")),
                 Entry::new(CombineView::List, tl!("List view")).icon(IconId::new("list")),
             ];
             Segmented::new(tl!("View"), Bind::bound(&mut app.combine_view), &views).show(ui);

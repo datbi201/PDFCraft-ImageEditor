@@ -1,6 +1,7 @@
 //! The top slot: the menus, the mode strip, the document buttons and the command search.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 
 use craft::behavior::{DisplayOrder, IconId, ItemSource, SelectionChange};
 use craft::keymap::CommandRef;
@@ -20,6 +21,10 @@ use crate::{Mode, PdfCraftApp};
 
 /// The modes the strip offers. Read is a View command, not a tab.
 const MODES: [(Mode, &str); 4] = [(Mode::AllTools, "All tools"), (Mode::Edit, "Edit"), (Mode::Convert, "Convert"), (Mode::Sign, "E-Sign")];
+
+const SPLIT_BAR_WIDTH: f32 = 820.0;
+const COMPACT_SEARCH_WIDTH: f32 = 620.0;
+const COMBINED_SEARCH_WIDTH: f32 = 1020.0;
 
 /// The mode labels, keyed by position.
 struct ModeTabs;
@@ -44,88 +49,119 @@ impl DisplayOrder<usize> for ModeTabs {
 
 impl ItemSource<usize> for ModeTabs {}
 
+pub(super) fn split_menus(app: &PdfCraftApp, width: f32) -> bool {
+    let hidden = app.hidden_interface();
+    app.native_menu.is_none() && !hidden.menubar && !hidden.toolbar && width < SPLIT_BAR_WIDTH
+}
+
+fn drag_enabled(app: &PdfCraftApp) -> bool {
+    cfg!(not(target_arch = "wasm32")) && !app.palette_open && !app.modal_open() && !app.full_screen_document()
+}
+
+pub(super) fn show_menus(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    window_bar(ui, "window-menus", tl!("Menu bar"), drag_enabled(app), |ui| app.menu_bar_ui(ui), document_buttons);
+}
+
 /// Draw the menus, the mode strip and the buttons after it, then the command palette over them.
-pub(super) fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+pub(super) fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui, split: bool) {
     let hidden = app.hidden_interface();
     let menus = app.native_menu.is_none() && !hidden.menubar;
-    let avail = ui.available_rect_before_wrap();
-    let rtl = ui.layout().prefer_right_to_left();
-    let row = Row::new().show(ui, |ui, _| {
-        // Production replaces the search field with its icon when the field cannot keep its minimum width.
-        let compact_search = ui.available_width() < 140.0 + 116.0;
-        // Below room for the current mode, the search icon and the three document buttons, the buttons give way
-        // (their commands stay in the menus and on their shortcuts) so the search never lands on the strip.
-        let document_buttons = ui.available_width() >= 200.0;
-        // The document may hide the tools (`crate::viewer_prefs`): the mode strip, the buttons and the search.
-        let shown = MODES.iter().position(|(mode, _)| *mode == app.mode);
-        Bar::new(tl!("Modes"), BarKind::Tool)
-            .trailing(|ui, _| {
-                if hidden.toolbar {
-                    return;
+    let width = ui.available_width();
+    let toolbar = !hidden.toolbar;
+    let search_width = if menus && !split { COMBINED_SEARCH_WIDTH } else { COMPACT_SEARCH_WIDTH };
+    let compact_search = width < search_width;
+    window_bar(
+        ui,
+        "mode-bar",
+        tl!("Modes"),
+        drag_enabled(app),
+        |ui| {
+            if menus && !split {
+                app.menu_bar_ui(ui);
+                if toolbar {
+                    Divider::vertical().show(ui);
                 }
+            }
+            if toolbar {
+                mode_tabs(app, ui);
+            }
+        },
+        |ui| {
+            if toolbar {
                 if compact_search {
                     IconButton::command(IconId::new("search"), "view.palette").label(tl!("Find tools and commands")).show(ui);
                 } else {
                     CommandSearch::new("view.palette", tl!("Find tools and commands")).show(ui);
                 }
-                // Production puts the search first and the document buttons at the right edge.
-                if document_buttons {
-                    IconButton::command(IconId::new("info"), "file.properties").show(ui);
-                    IconButton::command(IconId::new("save"), "file.save").show(ui);
-                    IconButton::command(IconId::new("printer"), "print.dialog").show(ui);
+                if !split {
+                    document_buttons(ui);
                 }
-            })
-            .show(ui, |ui, _| {
-                // Keep MenuBarUi and ModeTabs inside the same Bar body so both share one vertical center/padding.
-                if menus {
-                    app.menu_bar_ui(ui);
-                }
-                if menus && !hidden.toolbar {
-                    Divider::vertical().show(ui);
-                }
-                if hidden.toolbar {
-                    return;
-                }
-                // The bar lays its parts out along an unbounded row, so the strip takes its natural length (16.3).
-                let strip = TabStrip::new(tl!("Modes")).kind(TabKind::Text).natural_height(true);
-                let strip = match shown {
-                    Some(at) => strip.shown(at),
-                    None => strip,
-                };
-                let out = strip.show_items(ui, &ModeTabs, &mut |key, _| Tab::new(tl!(MODES[*key % MODES.len()].1)));
-                for event in out.response.events {
-                    if let CollectionEvent::Selection(SelectionChange::Set(keys)) = event
-                        && let Some((mode, _)) = keys.last().and_then(|at| MODES.get(*at))
-                    {
-                        app.switch_mode(ui.ctx(), *mode, true);
-                    }
-                }
-            });
-    });
-    let taken = row.output.rect;
-    let drag_rect = if rtl {
-        egui::Rect::from_min_max(egui::pos2(avail.left(), taken.top()), egui::pos2(taken.left(), taken.bottom()))
-    } else {
-        egui::Rect::from_min_max(egui::pos2(taken.right(), taken.top()), egui::pos2(avail.right(), taken.bottom()))
-    };
-    if drag_rect.width() > 4.0 && !app.palette_open && !app.modal_open() {
-        let press_origin = ui.input(|i| i.pointer.press_origin());
-        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        let hovered = pointer_pos.is_some_and(|p| drag_rect.contains(p));
-        let pressed_here = press_origin.is_some_and(|p| drag_rect.contains(p));
-        if hovered {
-            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-            } else if pressed_here && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary) && i.pointer.is_decidedly_dragging()) {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
-        }
-    }
+        },
+    );
     if app.palette_open {
         let ctx = ui.ctx().clone();
         let entries = palette_entries(app, &ctx);
         CommandPalette::new(tl!("Find tools and commands"), &entries, Bind::bound(&mut app.palette_open)).show(ui);
+    }
+}
+
+/// Only the space between the measured control groups is a window handle.
+fn window_bar(
+    ui: &mut egui::Ui,
+    key: &'static str,
+    label: &str,
+    drag_enabled: bool,
+    mut leading: impl FnMut(&mut egui::Ui),
+    mut trailing: impl FnMut(&mut egui::Ui),
+) {
+    let start = Cell::new(None);
+    let end = Cell::new(None);
+    let rtl = ui.layout().prefer_right_to_left();
+    let bar = Bar::new(label.to_owned(), BarKind::Tool)
+        .id_salt(key)
+        .trailing(|ui, _| end.set(Some(Row::new().show(ui, |ui, _| trailing(ui)).output.rect)))
+        .show(ui, |ui, _| start.set(Some(Row::new().show(ui, |ui, _| leading(ui)).output.rect)));
+    let bounds = bar.output.response.rect;
+    let start = start.get().unwrap_or_else(|| bounds.with_max_x(bounds.left()));
+    let end = end.get().unwrap_or_else(|| bounds.with_min_x(bounds.right()));
+    let (left, right) = if rtl { (end.right(), start.left()) } else { (start.right(), end.left()) };
+    let gap = egui::Rect::from_min_max(egui::pos2(left, bounds.top()), egui::pos2(right, bounds.bottom())).intersect(bounds);
+    if drag_enabled && gap.width() > 8.0 {
+        let handle = ui.interact(gap, ui.scope_id().with((key, "window-drag")), egui::Sense::CLICK | egui::Sense::DRAG);
+        if handle.double_clicked_by(egui::PointerButton::Primary) {
+            let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        } else if handle.drag_started_by(egui::PointerButton::Primary) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
+}
+
+fn document_buttons(ui: &mut egui::Ui) {
+    IconButton::command(IconId::new("info"), "file.properties").show(ui);
+    IconButton::command(IconId::new("save"), "file.save").show(ui);
+    IconButton::command(IconId::new("printer"), "print.dialog").show(ui);
+}
+
+fn mode_tabs(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let strip = TabStrip::new(tl!("Modes")).kind(TabKind::Text).natural_height(true);
+    // An active mode with its sidebar closed still needs an actionable tab.
+    let active = app.left_open().then(|| MODES.iter().position(|(mode, _)| *mode == app.mode)).flatten();
+    let strip = match active {
+        Some(at) => strip.shown(at),
+        None => strip,
+    };
+    let out = strip.show_items(ui, &ModeTabs, &mut |key, _| Tab::new(tl!(MODES[*key].1)));
+    let requested = out.picked.or_else(|| {
+        out.response.events.iter().find_map(|event| match event {
+            CollectionEvent::Selection(SelectionChange::Set(keys)) => keys.last().copied(),
+            CollectionEvent::Activate(at) => Some(*at),
+            _ => None,
+        })
+    });
+    if let Some((mode, _)) = requested.and_then(|at| MODES.get(at)) {
+        app.switch_mode(ui.ctx(), *mode, true);
     }
 }
 
@@ -178,5 +214,38 @@ mod tests {
         let all_tools_rect = h.get_by_role_and_label(egui::accesskit::Role::Tab, "All tools").rect();
         let dy = (file_rect.center().y - all_tools_rect.center().y).abs();
         assert!(dy <= 2.5, "MenuBar 'File' ({file_rect:?}) and 'All tools' ({all_tools_rect:?}) vertical centers differ by {dy}");
+    }
+
+    #[test]
+    fn minimum_window_keeps_menus_and_mode_tabs_clear_and_reopens_tools() {
+        use egui::accesskit::Role;
+
+        let mut h = Harness::builder().with_size(egui::vec2(480.0, 520.0)).build_eframe(|cc| {
+            PdfCraftApp::install_runtime(&cc.egui_ctx);
+            let mut app = PdfCraftApp::for_unit_tests();
+            app.set_option(&cc.egui_ctx, "language", "en").unwrap();
+            app.open_bytes(&cc.egui_ctx, "sample.pdf", None, include_bytes!("../../tests/data/form.pdf").to_vec()).unwrap();
+            app.set_left_open(false);
+            app
+        });
+        h.run_steps(6);
+        let file = h.get_by_role_and_label(Role::MenuItem, "File").rect();
+        let help = h.get_by_role_and_label(Role::MenuItem, "Help").rect();
+        let all_tools = h.get_by_role_and_label(Role::Tab, "All tools").rect();
+        let sign = h.get_by_role_and_label(Role::Tab, "E-Sign").rect();
+        let search = h.get_by_role_and_label(Role::Button, "Find tools and commands").rect();
+        let navigation = h.get_by_role_and_label(Role::Toolbar, "Navigation").rect();
+        assert!(file.bottom() <= all_tools.top());
+        assert!(help.right() <= 480.0 && all_tools.left() >= 0.0);
+        assert!(sign.right() <= search.left() && search.right() <= 480.0);
+        assert!(navigation.top() > sign.bottom() && navigation.bottom() <= 520.0);
+
+        for _ in 0..3 {
+            h.get_by_role_and_label(Role::Tab, "All tools").click();
+            h.run_steps(4);
+            assert!(h.state().left_open());
+            h.state_mut().set_left_open(false);
+            h.run_steps(4);
+        }
     }
 }

@@ -5,6 +5,7 @@ use craft::behavior::kurbo::Size;
 use craft::behavior::{DockSide, IconId};
 use craft::pages::PageDisplay;
 use craft::theme::TypeRole;
+use craft::ui::bars::{Bar, BarKind};
 use craft::ui::buttons::IconButton;
 use craft::ui::contract::{Bind, PopupKind, Props as _, Show as _, ShowContainer as _, Trigger};
 use craft::ui::display::Text;
@@ -15,12 +16,24 @@ use egui::Ui;
 
 use crate::PdfCraftApp;
 
+/// Below this height the dock icons and the full vertical view controls compete for the same space.
+pub(crate) fn uses_bottom(ctx: &egui::Context) -> bool {
+    ctx.content_rect().height() < 860.0
+}
+
+pub(super) fn bottom(app: &mut PdfCraftApp, ui: &mut Ui) {
+    Bar::new(tl!("Navigation"), BarKind::Tool).id_salt("document-navigation").show(ui, |ui, _| controls(app, ui, true));
+}
+
 /// Shows the rail's view cluster; nothing without an active document or a current page to view.
 pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
+    controls(app, ui, false);
+}
+
+fn controls(app: &mut PdfCraftApp, ui: &mut Ui, horizontal: bool) {
     let Some((index, id)) = app.active_ids() else { return };
     let Some(doc) = app.session.get(id) else { return };
     let page_count = doc.info.pages.len();
-    let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
     let rail_on_right = app.rail_side == DockSide::End;
     let Some(view) = app.views.get_mut(index) else { return };
     let current = view.current();
@@ -36,7 +49,7 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
     let reselect = std::mem::take(&mut view.page_input_reselect);
     let input_id = view.page_input_id();
     let (field_rect, _) = ui.allocate_exact_size(field_size, egui::Sense::hover());
-    let edit = TextField::new("Current page", Bind::bound(&mut view.page_input))
+    let edit = TextField::new(tl!("Current page"), Bind::bound(&mut view.page_input))
         .id(input_id)
         .select_on_focus()
         .select_all(reselect)
@@ -47,6 +60,7 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
     }
     if edit.submitted {
         let typed = view.page_input.clone();
+        let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
         view.go_to_typed(&typed, &labels);
         view.page_input_draft = false;
     }
@@ -57,24 +71,35 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
     // focus is on its text part, which counts as the field.
     if !(view.page_input_draft && focus::is_focused(ui.ctx(), edit.response.id)) {
         view.page_input_draft = false;
-        view.page_input = view.current_page_label(labels.get(view.current()).map(String::as_str));
+        view.page_input = view.current_page_label(doc.info.pages.get(view.current()).map(|page| page.label.as_str()));
     }
 
-    let label = labels.get(current).map_or("", String::as_str);
+    let label = page.label.as_str();
     // Out of range (an empty document) reads "Page 0 of 0", never past the end.
     let shown = if current < page_count { current + 1 } else { page_count };
     let of = crate::i18n::fmt(crate::i18n::t("Page {p} of {n}"), &[("p", &shown.to_string()), ("n", &page_count.to_string())]);
-    Text::new(super::page_position(current, page_count, label)).role(TypeRole::Caption).tooltip(of).show(ui);
+    let position = super::page_position(current, page_count, label);
+    let position = if !horizontal {
+        position
+    } else if position.contains('/') {
+        format!("({position})")
+    } else {
+        format!("/ {position}")
+    };
+    Text::new(position).role(TypeRole::Caption).tooltip(of).show(ui);
 
-    IconButton::command(IconId::new("chevron_left"), "view.previous_view").show(ui);
-    IconButton::command(IconId::new("chevron_right"), "view.next_view").show(ui);
+    if !horizontal {
+        IconButton::command(IconId::new("chevron_left"), "view.previous_view").show(ui);
+        IconButton::command(IconId::new("chevron_right"), "view.next_view").show(ui);
+    }
     IconButton::command(IconId::new("chevron_up"), "view.previous_page").show(ui);
     IconButton::command(IconId::new("chevron_down"), "view.next_page").show(ui);
 
     // The percent suffix and three digits need the rail's full width, not an icon button's width.
-    let zoom_size = egui::vec2(ui.available_width(), field_size.y);
+    let zoom_width = if horizontal { field_size.x * 2.0 } else { ui.available_width() };
+    let zoom_size = egui::vec2(zoom_width, field_size.y);
     let (zoom_rect, _) = ui.allocate_exact_size(zoom_size, egui::Sense::hover());
-    let field = ZoomField::new("Zoom", view.canvas_view(), page_size).scale(ZoomScale::Points).show_at(ui, zoom_rect);
+    let field = ZoomField::new(tl!("Zoom"), view.canvas_view(), page_size).scale(ZoomScale::Points).show_at(ui, zoom_rect);
     if let Some(edited) = field.view.committed() {
         view.apply_canvas_view(edited);
     }
@@ -82,16 +107,20 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
     IconButton::command(IconId::new("zoom_in"), "view.zoom.in").show(ui);
     IconButton::command(IconId::new("zoom_out"), "view.zoom.out").show(ui);
     IconButton::command(IconId::new("maximize_2"), "view.fit_toggle").show(ui);
-    IconButton::command(IconId::new("rotate_cw"), "view.rotate.cw").show(ui);
+    if !horizontal {
+        IconButton::command(IconId::new("rotate_cw"), "view.rotate.cw").show(ui);
+    }
+
+    let rail_side_command = if rail_on_right { "view.rail.left" } else { "view.rail.right" };
 
     // The rows' marks come from the commands' checked state (the catalog), not from here.
     let display_icon = match view.view.display {
         PageDisplay::Single => "file-text",
         PageDisplay::TwoUp => "columns-2",
-        PageDisplay::Columns => "layout-grid",
+        PageDisplay::Columns => "grid",
     };
-    let display = IconButton::new(IconId::new(display_icon)).label("Page display").popup(PopupKind::Menu).show(ui);
-    Menu::new("Page display").opened_by(&display.response, Trigger::Press).show(ui, |ui, _| {
+    let display = IconButton::new(IconId::new(display_icon)).label(tl!("Page display")).popup(PopupKind::Menu).show(ui);
+    Menu::new(tl!("Page display")).opened_by(&display.response, Trigger::Press).show(ui, |ui, _| {
         for command in [
             "view.layout.single",
             "view.layout.two_up",
@@ -111,9 +140,16 @@ pub(crate) fn show(app: &mut PdfCraftApp, ui: &mut Ui) {
         }
     });
 
-    if rail_on_right {
-        IconButton::command(IconId::new("panel_left"), "view.rail.left").show(ui);
+    if horizontal {
+        let label = tl!("More view controls");
+        let more = IconButton::new(IconId::new("more")).label(label).popup(PopupKind::Menu).show(ui);
+        Menu::new(label).opened_by(&more.response, Trigger::Press).show(ui, |ui, _| {
+            for command in ["view.previous_view", "view.next_view", "view.rotate.cw", rail_side_command] {
+                MenuItem::command(command).show(ui);
+            }
+        });
     } else {
-        IconButton::command(IconId::new("panel_right"), "view.rail.right").show(ui);
+        let icon = if rail_on_right { "panel_left" } else { "panel_right" };
+        IconButton::command(IconId::new(icon), rail_side_command).show(ui);
     }
 }

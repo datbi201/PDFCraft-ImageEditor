@@ -24,6 +24,10 @@ pub(crate) enum StripTab {
 
 /// The strip of `place`: its tabs in pane order, then (main strip only) Combine files.
 pub(crate) fn strip(app: &mut PdfCraftApp, ui: &mut egui::Ui, place: Place) {
+    strip_with_open(app, ui, place, false);
+}
+
+pub(super) fn strip_with_open(app: &mut PdfCraftApp, ui: &mut egui::Ui, place: Place, show_open: bool) {
     let mut tabs: Vec<DocumentTab<StripTab>> = Vec::new();
     for index in app.tabs_in(place) {
         let Some(view) = app.views.get(index) else { continue };
@@ -47,16 +51,19 @@ pub(crate) fn strip(app: &mut PdfCraftApp, ui: &mut egui::Ui, place: Place) {
     };
     let label = if place == Place::Main { tl!("Documents") } else { tl!("Split view documents") };
     let mut strip = DocumentTabs::new(label.to_string(), &tabs).reorderable(true);
-    if place == Place::Main {
+    if show_open {
         strip = strip.trailing(|ui| {
             let open = Button::command("file.open").variant(craft::theme::Variant::GHOST).icon(IconId::new("plus")).show(ui);
-            super::keep_arrow_cursor(ui, open.response.hovered());
+            super::keep_arrow_cursor(ui, open.response.contains_pointer());
         });
     }
     if let Some(selected) = selected {
         strip = strip.selected(selected);
     }
     let output = strip.show(ui);
+    if place == Place::Main {
+        super::keep_arrow_cursor(ui, output.hovered.is_some());
+    }
     let (events, response) = (output.events, output.response);
 
     for event in events {

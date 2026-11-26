@@ -199,13 +199,7 @@ impl PdfCraftApp {
             }
             "tools.expand" => self.expand_all_tools(ctx),
             "tools.collapse" => self.all_tools_full = false,
-            "tools.all" => {
-                if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
-                    v.organize = false;
-                }
-                self.left = crate::LeftPanel::AllTools;
-                self.enter_mode(ctx, Mode::AllTools);
-            }
+            "tools.all" => self.switch_mode(ctx, Mode::AllTools, true),
             "bookmark.paste" => self.bookmark_action(ctx, crate::panels::BmAction::Paste { parent: Vec::new(), index: usize::MAX }),
             "bookmark.expand_all" | "bookmark.collapse_all" | "bookmark.expand_level" => {
                 let level = match id {

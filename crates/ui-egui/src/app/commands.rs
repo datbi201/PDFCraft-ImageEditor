@@ -81,6 +81,7 @@ impl PdfCraftApp {
     /// with the workspace as [`Self::enter_mode`] sets it.
     pub(crate) fn select_mode(&mut self, ctx: &egui::Context, mode: Mode) {
         self.enter_mode(ctx, mode);
+        self.all_tools_full = false;
         self.reveal_tools();
         if let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) {
             view.organize = false;
